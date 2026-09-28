@@ -235,6 +235,26 @@ export class LarkCliTransport implements LarkTransport {
     this.log("info", "飞书文件已发送");
   }
 
+  async addReaction(messageId: string, emojiType: string): Promise<string> {
+    const output = await runLarkCli(this.command, [
+      "im", "reactions", "create", "--message-id", messageId,
+      "--data", JSON.stringify({ reaction_type: { emoji_type: emojiType } }),
+      "--as", "bot", "--json",
+    ]);
+    const reactionId = findField(JSON.parse(output) as unknown, "reaction_id");
+    if (!reactionId) throw new Error("飞书表情添加成功但未返回表情 ID");
+    this.log("info", "飞书处理表情已添加");
+    return reactionId;
+  }
+
+  async removeReaction(messageId: string, reactionId: string): Promise<void> {
+    await runLarkCli(this.command, [
+      "im", "reactions", "delete", "--message-id", messageId,
+      "--reaction-id", reactionId, "--as", "bot", "--json",
+    ]);
+    this.log("info", "飞书处理表情已清理");
+  }
+
   private async startConsumer(key: string): Promise<void> {
     if (!this.running) return;
     const state: Consumer = {};

@@ -1,4 +1,4 @@
-# 飞书 ↔ Codex 桌面桥接
+# 飞书桥接Codex
 
 macOS Apple 芯片桌面程序。飞书消息经允许名单筛选后交给本机 Codex App Server，结果回到原飞书会话的运行卡片。
 

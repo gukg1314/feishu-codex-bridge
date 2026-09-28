@@ -193,8 +193,8 @@ function createWindow(): void {
     width: 1080, height: 730, minWidth: 760, minHeight: 650,
     frame: false, show: false, backgroundColor: '#ffffff',
     icon: app.isPackaged
-      ? path.join(process.resourcesPath, 'icon.png')
-      : path.resolve(__dirname, '../../resources/icon.png'),
+      ? path.join(process.resourcesPath, 'main.png')
+      : path.resolve(__dirname, '../../icon/main.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false
@@ -213,12 +213,13 @@ function createWindow(): void {
 
 function createTray(): void {
   const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'trayTemplate.png')
-    : path.resolve(__dirname, '../../resources/trayTemplate.png');
-  const icon = nativeImage.createFromPath(iconPath);
-  icon.setTemplateImage(process.platform === 'darwin');
+    ? path.join(process.resourcesPath, 'bar.png')
+    : path.resolve(__dirname, '../../icon/bar.png');
+  const icon = nativeImage.createFromPath(iconPath)
+    .crop({ x: 497, y: 263, width: 545, height: 474 })
+    .resize({ height: 18 });
   tray = new Tray(icon);
-  tray.setToolTip('飞书 ↔ Codex');
+  tray.setToolTip('飞书桥接Codex');
   tray.on('click', showWindow);
   updateTray();
 }
@@ -232,7 +233,7 @@ app.on('before-quit', (event) => {
 app.on('activate', showWindow);
 
 void app.whenReady().then(async () => {
-  app.setName('飞书 Codex 桥接');
+  app.setName('飞书桥接Codex');
   await mkdir(app.getPath('userData'), { recursive: true });
   saved = await loadSettings(dataPath('settings.json'));
   await restoreLogs();

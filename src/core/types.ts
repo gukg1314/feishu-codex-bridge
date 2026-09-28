@@ -68,4 +68,6 @@ export interface LarkTransport {
   sendText(chatId: string, text: string): Promise<void>;
   sendImage(chatId: string, path: string): Promise<void>;
   sendFile(chatId: string, path: string): Promise<void>;
+  addReaction(messageId: string, emojiType: string): Promise<string>;
+  removeReaction(messageId: string, reactionId: string): Promise<void>;
 }

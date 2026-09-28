@@ -18,6 +18,8 @@ interface ActiveMessage {
   stopRequested: boolean;
   prompts: Prompt[];
   lastProgressAt: number;
+  reaction?: Promise<string | undefined>;
+  reactionRemoval?: Promise<void>;
 }
 
 export class Bridge {
@@ -90,6 +92,7 @@ export class Bridge {
         await this.options.codex.interrupt(active.threadId, active.turnId).catch(() => undefined);
       }
       await this.updateCard(active, { status: 'stopped', summary: '已停止', question: undefined, approval: undefined });
+      await this.clearReaction(active);
     }
     this.queues.clear();
     const stopped = await Promise.allSettled([this.options.lark.stop(), this.options.codex.stop()]);
@@ -202,36 +205,58 @@ export class Bridge {
     this.cards.set(cardMessageId, active);
     this.report();
     this.options.log('INFO', 'Running card sent');
-
-    let threadId = this.store.getThread(message.chatId, message.senderOpenId);
-    if (threadId) {
-      try {
-        await this.options.codex.resumeThread(threadId, this.settings.workingDirectory);
-      } catch {
-        this.options.log('WARN', 'Stored Codex thread could not be resumed; creating a new thread');
-        threadId = undefined;
-      }
-    }
-    if (!threadId) {
-      threadId = await this.options.codex.startThread(this.settings.workingDirectory);
-      await this.store.setThread(message.chatId, message.senderOpenId, threadId);
-    }
-    active.threadId = threadId;
-    if (active.stopRequested || generation !== this.generation) return;
-    const instruction = '若生成需要回传的本地图片或文件，请在最终回复中使用指向绝对路径的 Markdown 链接。';
-    const run = await this.options.codex.startTurn(threadId, `${message.text}\n\n${instruction}`.trim(), message.attachments, this.settings.workingDirectory, {
-      onProgress: (text) => this.onProgress(active, text),
-      onQuestion: (request) => this.enqueuePrompt(active, { kind: 'question', value: request }),
-      onApproval: (request) => this.enqueuePrompt(active, { kind: 'approval', value: request }),
-      onPromptResolved: (id) => this.resolvePrompt(active, id),
+    active.reaction = this.options.lark.addReaction(message.messageId, 'GLANCE').catch(() => {
+      this.options.log('WARN', 'Processing reaction add failed');
+      return undefined;
     });
-    active.turnId = run.turnId;
-    if (active.stopRequested || generation !== this.generation) {
-      await this.options.codex.interrupt(threadId, run.turnId).catch(() => undefined);
+
+    try {
+      let threadId = this.store.getThread(message.chatId, message.senderOpenId);
+      if (threadId) {
+        try {
+          await this.options.codex.resumeThread(threadId, this.settings.workingDirectory);
+        } catch {
+          this.options.log('WARN', 'Stored Codex thread could not be resumed; creating a new thread');
+          threadId = undefined;
+        }
+      }
+      if (!threadId) {
+        threadId = await this.options.codex.startThread(this.settings.workingDirectory);
+        await this.store.setThread(message.chatId, message.senderOpenId, threadId);
+      }
+      active.threadId = threadId;
+      if (active.stopRequested || generation !== this.generation) return;
+      const instruction = '若生成需要回传的本地图片或文件，请在最终回复中使用指向绝对路径的 Markdown 链接。';
+      const run = await this.options.codex.startTurn(threadId, `${message.text}\n\n${instruction}`.trim(), message.attachments, this.settings.workingDirectory, {
+        onProgress: (text) => this.onProgress(active, text),
+        onQuestion: (request) => this.enqueuePrompt(active, { kind: 'question', value: request }),
+        onApproval: (request) => this.enqueuePrompt(active, { kind: 'approval', value: request }),
+        onPromptResolved: (id) => this.resolvePrompt(active, id),
+      });
+      active.turnId = run.turnId;
+      if (active.stopRequested || generation !== this.generation) {
+        await this.options.codex.interrupt(threadId, run.turnId).catch(() => undefined);
+      }
+      const result = await run.completed;
+      if (generation !== this.generation) return;
+      await this.finish(active, result);
+    } finally {
+      await this.clearReaction(active);
     }
-    const result = await run.completed;
-    if (generation !== this.generation) return;
-    await this.finish(active, result);
+  }
+
+  private clearReaction(active: ActiveMessage): Promise<void> {
+    if (!active.reactionRemoval) {
+      active.reactionRemoval = (active.reaction ?? Promise.resolve(undefined)).then(async (reactionId) => {
+        if (!reactionId) return;
+        try {
+          await this.options.lark.removeReaction(active.message.messageId, reactionId);
+        } catch {
+          this.options.log('WARN', 'Processing reaction removal failed');
+        }
+      });
+    }
+    return active.reactionRemoval;
   }
 
   private onProgress(active: ActiveMessage, text: string): void {
@@ -276,6 +301,7 @@ export class Bridge {
       active.stopRequested = true;
       this.options.log('INFO', 'Turn stop requested from card');
       await this.updateCard(active, { status: 'stopped', summary: '已停止', question: undefined, approval: undefined });
+      void this.clearReaction(active);
       if (active.threadId && active.turnId) await this.options.codex.interrupt(active.threadId, active.turnId).catch(() => undefined);
       return;
     }

@@ -95,7 +95,7 @@ export class CodexClient implements CodexPort {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'feishu_codex_bridge', title: 'Feishu Codex Bridge', version: '0.1.0' },
+        clientInfo: { name: 'feishu_codex_bridge', title: '飞书桥接Codex', version: '1.0.1' },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       this.send({ method: 'initialized', params: {} });

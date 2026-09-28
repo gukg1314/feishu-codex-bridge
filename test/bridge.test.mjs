@@ -48,6 +48,8 @@ class FakeLark {
   cards = [];
   images = [];
   files = [];
+  reactions = [];
+  removedReactions = [];
 
   async start(handlers) { this.handlers = handlers; }
   async stop() { this.handlers = undefined; }
@@ -60,6 +62,12 @@ class FakeLark {
   async sendText() {}
   async sendImage(chatId, path) { this.images.push({ chatId, path }); }
   async sendFile(chatId, path) { this.files.push({ chatId, path }); }
+  async addReaction(messageId, emojiType) {
+    const reactionId = `reaction_${this.reactions.length + 1}`;
+    this.reactions.push({ messageId, emojiType, reactionId });
+    return reactionId;
+  }
+  async removeReaction(messageId, reactionId) { this.removedReactions.push({ messageId, reactionId }); }
   async emitMessage(value) { await this.handlers.onMessage(value); }
   async emitAction(value) { await this.handlers.onAction(value); }
 }
@@ -100,20 +108,30 @@ async function harness(t) {
   return { bridge, lark, codex, storageDir };
 }
 
-test('成员和群白名单、@ 条件及消息去重', async (t) => {
+test('成员和群白名单、@ 条件、消息去重及 GLANCE 清理', async (t) => {
   const { lark, codex } = await harness(t);
   await lark.emitMessage(message('om_other_user', { senderOpenId: 'ou_other' }));
   await lark.emitMessage(message('om_other_chat', { chatId: 'oc_other' }));
   await lark.emitMessage(message('om_no_mention', { mentionsBot: false }));
   assert.equal(lark.cards.length, 0);
+  assert.equal(lark.reactions.length, 0);
   await lark.emitMessage(message('om_valid'));
   await waitFor(() => codex.turns.length === 1);
+  assert.deepEqual(lark.reactions, [{ messageId: 'om_valid', emojiType: 'GLANCE', reactionId: 'reaction_1' }]);
   await lark.emitMessage(message('om_valid'));
   assert.equal(lark.cards.length, 1);
   codex.turns[0].complete({ status: 'completed', text: '完成' });
   await waitFor(() => lark.cards[0].snapshot.status === 'completed');
+  await waitFor(() => lark.removedReactions.length === 1);
+  assert.deepEqual(lark.removedReactions, [{ messageId: 'om_valid', reactionId: 'reaction_1' }]);
   await lark.emitMessage(message('om_valid'));
   assert.equal(lark.cards.length, 1);
+  await lark.emitMessage(message('om_failed'));
+  await waitFor(() => codex.turns.length === 2);
+  codex.turns[1].complete({ status: 'failed', text: '', error: '模拟失败' });
+  await waitFor(() => lark.cards[1].snapshot.status === 'failed');
+  await waitFor(() => lark.removedReactions.length === 2);
+  assert.deepEqual(lark.removedReactions[1], { messageId: 'om_failed', reactionId: 'reaction_2' });
 });
 
 test('消息到完成卡片：图片和 Excel 双向传递，链接保留', async (t) => {
@@ -170,5 +188,7 @@ test('提问回复、审批和停止卡片回调', async (t) => {
   await lark.emitAction({ cardMessageId: stopCard.id, actorOpenId: 'ou_owner', action: 'stop', version: stopCard.snapshot.version });
   assert.deepEqual(codex.interrupted, [{ threadId: 'thread_1', turnId: 'turn_3' }]);
   assert.equal(stopCard.snapshot.status, 'stopped');
+  await waitFor(() => lark.removedReactions.length === 3);
+  assert.deepEqual(lark.removedReactions[2], { messageId: 'om_stop', reactionId: 'reaction_3' });
   codex.turns[2].complete({ status: 'interrupted', text: '' });
 });

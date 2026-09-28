@@ -4,11 +4,11 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
-  <title>飞书 ↔ Codex</title>
+  <title>飞书桥接Codex</title>
   <style>html, body { margin: 0; min-height: 100%; background: light-dark(#ffffff, #202329); } button, input, textarea { -webkit-app-region: no-drag; }</style>
 </head>
 <body>
-<div id="fc-bridge-demo" data-running="false" aria-label="飞书 Codex 桌面桥接客户端界面预览">
+<div id="fc-bridge-demo" data-running="false" aria-label="飞书桥接Codex">
   <style>
     #fc-bridge-demo {
       color-scheme: light dark;
@@ -66,6 +66,7 @@
     #fc-bridge-demo .fc-traffic button:nth-child(1) { background: #ff5f57; }
     #fc-bridge-demo .fc-traffic button:nth-child(2) { background: #febc2e; }
     #fc-bridge-demo .fc-traffic button:nth-child(3) { background: #28c840; }
+    #fc-bridge-demo .fc-traffic button:hover { filter: brightness(.82); }
     #fc-bridge-demo .fc-title { font-size: 13px; font-weight: 500; white-space: nowrap; }
     #fc-bridge-demo .fc-version { font-size: 12px; color: var(--fc-muted); }
     #fc-bridge-demo .fc-layout { display: grid; grid-template-columns: 194px minmax(0, 1fr); min-height: 597px; }
@@ -79,10 +80,7 @@
     }
     #fc-bridge-demo .fc-brand { gap: 10px; padding: 0 9px; min-width: 0; }
     #fc-bridge-demo .fc-brand-mark {
-      display: grid; place-items: center; flex: none;
-      width: 31px; height: 31px; border-radius: 8px;
-      background: var(--fc-primary); color: var(--fc-primary-text);
-      font-size: 17px; font-weight: 500;
+      display: block; flex: none; width: 32px; height: 32px; object-fit: contain;
     }
     #fc-bridge-demo .fc-brand-name { font-size: 14px; font-weight: 500; white-space: nowrap; }
     #fc-bridge-demo .fc-nav { display: grid; gap: 4px; }
@@ -93,6 +91,7 @@
       font: inherit; font-size: 13px; font-weight: 500;
     }
     #fc-bridge-demo .fc-nav button[data-active="true"] { background: var(--fc-primary-soft); color: var(--fc-primary); }
+    #fc-bridge-demo .fc-nav button[data-active="true"]:hover { background: light-dark(#dce8ff, #2d4165); }
     #fc-bridge-demo .fc-nav button:not([data-active="true"]):hover { background: var(--fc-subtle); color: var(--fc-text); }
     #fc-bridge-demo .fc-nav i { font-size: 16px; font-style: normal; width: 18px; text-align: center; }
     #fc-bridge-demo .fc-sidebar-foot {
@@ -125,12 +124,13 @@
       appearance: none; min-height: 34px; padding: 0 14px;
       border-radius: 7px; border: 1px solid var(--fc-border);
       background: var(--fc-surface); color: var(--fc-text);
-      font: inherit; font-size: 13px; font-weight: 500;
+      font: inherit; font-size: 13px; font-weight: 500; cursor: pointer;
     }
-    #fc-bridge-demo .fc-button:hover:not(:disabled) { background: var(--fc-subtle); }
+    #fc-bridge-demo .fc-button:hover:not(:disabled) { background: var(--fc-primary-soft); border-color: var(--fc-primary); color: var(--fc-primary); }
     #fc-bridge-demo .fc-button.fc-primary { border-color: var(--fc-primary); background: var(--fc-primary); color: var(--fc-primary-text); }
-    #fc-bridge-demo .fc-button.fc-primary:hover:not(:disabled) { opacity: .88; }
-    #fc-bridge-demo .fc-button:disabled { opacity: .43; }
+    #fc-bridge-demo .fc-button.fc-primary:hover:not(:disabled) { background: light-dark(#1857c3, #8aafff); border-color: light-dark(#1857c3, #8aafff); color: var(--fc-primary-text); }
+    #fc-bridge-demo .fc-button:disabled { background: light-dark(#f1f3f6, #2a303a); color: light-dark(#68707b, #a9b2bf); cursor: default; }
+    #fc-bridge-demo .fc-button.fc-primary:disabled { background: light-dark(#e4ecf9, #304362); border-color: light-dark(#c8d7f3, #435d86); color: light-dark(#526f95, #c3cce0); }
     #fc-bridge-demo .fc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 16px; }
     #fc-bridge-demo .fc-service {
       border: 1px solid var(--fc-border); border-radius: 9px; padding: 17px 18px;
@@ -226,13 +226,13 @@
     <div class="fc-titlebar" aria-label="macOS 窗口标题栏">
       <div class="fc-title-left">
         <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
-        <span class="fc-title">飞书 ↔ Codex</span>
+        <span class="fc-title">飞书桥接Codex</span>
       </div>
-      <span class="fc-version">桌面桥接 · v1.0</span>
+      <span class="fc-version">v1.0.1</span>
     </div>
     <div class="fc-layout">
       <aside class="fc-sidebar">
-        <div class="fc-brand"><div class="fc-brand-mark" aria-hidden="true">↔</div><span class="fc-brand-name">桌面桥接</span></div>
+        <div class="fc-brand"><img class="fc-brand-mark" src="./main.png" alt=""><span class="fc-brand-name">飞书桥接Codex</span></div>
         <nav class="fc-nav" aria-label="主导航">
           <button class="cursor-interaction" type="button" data-page="overview" data-active="true" aria-current="page"><i aria-hidden="true">◫</i>总览</button>
           <button class="cursor-interaction" type="button" data-page="settings" data-active="false"><i aria-hidden="true">⚙</i>设置</button>

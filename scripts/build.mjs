@@ -32,5 +32,6 @@ await Promise.all([
     format: 'iife',
     target: 'chrome130'
   }),
-  copyFile('src/ui/index.html', 'dist/ui/index.html')
+  copyFile('src/ui/index.html', 'dist/ui/index.html'),
+  copyFile('icon/main.png', 'dist/ui/main.png')
 ]);

@@ -1,6 +1,6 @@
 {
   "name": "feishu-codex-bridge",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Feishu to Codex desktop bridge",
   "main": "dist/desktop/main.cjs",
@@ -22,7 +22,7 @@
   },
   "build": {
     "appId": "com.feishucodex.bridge",
-    "productName": "飞书 Codex 桥接",
+    "productName": "飞书桥接Codex",
     "asar": true,
     "files": [
       "dist/**",
@@ -31,8 +31,8 @@
     "extraResources": [
       { "from": "build/bin", "to": "bin" },
       { "from": "build/licenses", "to": "licenses" },
-      { "from": "resources/trayTemplate.png", "to": "trayTemplate.png" },
-      { "from": "resources/icon.png", "to": "icon.png" }
+      { "from": "icon/bar.png", "to": "bar.png" },
+      { "from": "icon/main.png", "to": "main.png" }
     ],
     "directories": { "output": "release" },
     "mac": {
@@ -42,8 +42,8 @@
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "notarize": false,
-      "icon": "resources/icon.png"
+      "icon": "icon/macdock.png"
     },
-    "dmg": { "title": "飞书 Codex 桥接 ${version}" }
+    "dmg": { "title": "飞书桥接Codex ${version}" }
   }
 }
