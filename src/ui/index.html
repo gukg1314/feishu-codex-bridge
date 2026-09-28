@@ -1,0 +1,328 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
+  <title>飞书 ↔ Codex</title>
+  <style>html, body { margin: 0; min-height: 100%; background: light-dark(#ffffff, #202329); } button, input, textarea { -webkit-app-region: no-drag; }</style>
+</head>
+<body>
+<div id="fc-bridge-demo" data-running="false" aria-label="飞书 Codex 桌面桥接客户端界面预览">
+  <style>
+    #fc-bridge-demo {
+      color-scheme: light dark;
+      --fc-window: light-dark(#ffffff, #202329);
+      --fc-sidebar: light-dark(#f5f6f8, #1b1e23);
+      --fc-surface: light-dark(#ffffff, #272b31);
+      --fc-subtle: light-dark(#f7f8fa, #22262b);
+      --fc-text: light-dark(#20242a, #f2f3f5);
+      --fc-muted: light-dark(#69717c, #aeb5bf);
+      --fc-border: light-dark(#e5e8ec, #383e46);
+      --fc-primary: light-dark(#2465d9, #6b9cff);
+      --fc-primary-text: light-dark(#ffffff, #101827);
+      --fc-primary-soft: light-dark(#eaf1ff, #20314e);
+      --fc-green: light-dark(#168458, #66d6a4);
+      --fc-green-soft: light-dark(#eaf7f0, #1d392d);
+      --fc-red: light-dark(#ba4a4a, #f18b88);
+      --fc-red-soft: light-dark(#fcf0ee, #42292b);
+      --fc-shadow: light-dark(0 18px 46px #20293822, 0 18px 46px #00000055);
+      width: 100%;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--fc-text);
+      box-sizing: border-box;
+    }
+    #fc-bridge-demo *, #fc-bridge-demo *::before, #fc-bridge-demo *::after { box-sizing: border-box; }
+    #fc-bridge-demo .fc-window {
+      width: 100%;
+      min-height: 650px;
+      overflow: hidden;
+      background: var(--fc-window);
+      border: 1px solid var(--fc-border);
+      border-radius: 13px;
+      box-shadow: var(--fc-shadow);
+    }
+    #fc-bridge-demo .fc-titlebar {
+      height: 52px;
+      -webkit-app-region: drag;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--fc-border);
+      background: var(--fc-window);
+    }
+    #fc-bridge-demo .fc-title-left, #fc-bridge-demo .fc-traffic,
+    #fc-bridge-demo .fc-brand, #fc-bridge-demo .fc-section-head,
+    #fc-bridge-demo .fc-hero-head, #fc-bridge-demo .fc-status-line,
+    #fc-bridge-demo .fc-service-row, #fc-bridge-demo .fc-actions,
+    #fc-bridge-demo .fc-log-line, #fc-bridge-demo .fc-field-row {
+      display: flex;
+      align-items: center;
+    }
+    #fc-bridge-demo .fc-title-left { gap: 20px; min-width: 0; }
+    #fc-bridge-demo .fc-traffic { gap: 7px; flex: none; -webkit-app-region: no-drag; }
+    #fc-bridge-demo .fc-traffic button { width: 11px; height: 11px; border-radius: 50%; display: block; border: 0; padding: 0; cursor: pointer; }
+    #fc-bridge-demo .fc-traffic button:nth-child(1) { background: #ff5f57; }
+    #fc-bridge-demo .fc-traffic button:nth-child(2) { background: #febc2e; }
+    #fc-bridge-demo .fc-traffic button:nth-child(3) { background: #28c840; }
+    #fc-bridge-demo .fc-title { font-size: 13px; font-weight: 500; white-space: nowrap; }
+    #fc-bridge-demo .fc-version { font-size: 12px; color: var(--fc-muted); }
+    #fc-bridge-demo .fc-layout { display: grid; grid-template-columns: 194px minmax(0, 1fr); min-height: 597px; }
+    #fc-bridge-demo .fc-sidebar {
+      display: flex;
+      flex-direction: column;
+      gap: 30px;
+      padding: 25px 13px 18px;
+      background: var(--fc-sidebar);
+      border-right: 1px solid var(--fc-border);
+    }
+    #fc-bridge-demo .fc-brand { gap: 10px; padding: 0 9px; min-width: 0; }
+    #fc-bridge-demo .fc-brand-mark {
+      display: grid; place-items: center; flex: none;
+      width: 31px; height: 31px; border-radius: 8px;
+      background: var(--fc-primary); color: var(--fc-primary-text);
+      font-size: 17px; font-weight: 500;
+    }
+    #fc-bridge-demo .fc-brand-name { font-size: 14px; font-weight: 500; white-space: nowrap; }
+    #fc-bridge-demo .fc-nav { display: grid; gap: 4px; }
+    #fc-bridge-demo .fc-nav button {
+      appearance: none; border: 0; background: transparent; color: var(--fc-muted);
+      width: 100%; min-height: 36px; border-radius: 7px; padding: 0 12px;
+      display: flex; align-items: center; gap: 10px; text-align: left;
+      font: inherit; font-size: 13px; font-weight: 500;
+    }
+    #fc-bridge-demo .fc-nav button[data-active="true"] { background: var(--fc-primary-soft); color: var(--fc-primary); }
+    #fc-bridge-demo .fc-nav button:not([data-active="true"]):hover { background: var(--fc-subtle); color: var(--fc-text); }
+    #fc-bridge-demo .fc-nav i { font-size: 16px; font-style: normal; width: 18px; text-align: center; }
+    #fc-bridge-demo .fc-sidebar-foot {
+      margin-top: auto; padding: 0 9px; color: var(--fc-muted); font-size: 12px; line-height: 1.6;
+    }
+    #fc-bridge-demo .fc-main { min-width: 0; padding: 29px 34px 34px; background: var(--fc-window); }
+    #fc-bridge-demo .fc-page[hidden] { display: none; }
+    #fc-bridge-demo h1, #fc-bridge-demo h2, #fc-bridge-demo p { margin: 0; }
+    #fc-bridge-demo h1 { font-size: 22px; line-height: 1.35; font-weight: 500; }
+    #fc-bridge-demo h2 { font-size: 15px; line-height: 1.4; font-weight: 500; }
+    #fc-bridge-demo .fc-page-subtitle { color: var(--fc-muted); font-size: 13px; line-height: 1.6; margin-top: 5px; }
+    #fc-bridge-demo .fc-hero {
+      margin-top: 25px; padding: 23px 24px;
+      border: 1px solid var(--fc-border); border-radius: 10px; background: var(--fc-surface);
+    }
+    #fc-bridge-demo .fc-hero-head { justify-content: space-between; gap: 14px; align-items: flex-start; }
+    #fc-bridge-demo .fc-status-line { gap: 11px; }
+    #fc-bridge-demo .fc-status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--fc-green); flex: none; }
+    #fc-bridge-demo[data-running="false"] .fc-status-dot { background: var(--fc-red); }
+    #fc-bridge-demo .fc-status-title { font-size: 18px; font-weight: 500; }
+    #fc-bridge-demo .fc-status-pill {
+      display: inline-flex; align-items: center; min-height: 25px; padding: 0 9px;
+      border-radius: 99px; color: var(--fc-green); background: var(--fc-green-soft);
+      font-size: 12px; font-weight: 500; white-space: nowrap;
+    }
+    #fc-bridge-demo[data-running="false"] .fc-status-pill { color: var(--fc-red); background: var(--fc-red-soft); }
+    #fc-bridge-demo .fc-hero-copy { margin-top: 10px; color: var(--fc-muted); font-size: 13px; line-height: 1.6; }
+    #fc-bridge-demo .fc-actions { gap: 9px; margin-top: 23px; flex-wrap: wrap; }
+    #fc-bridge-demo .fc-button {
+      appearance: none; min-height: 34px; padding: 0 14px;
+      border-radius: 7px; border: 1px solid var(--fc-border);
+      background: var(--fc-surface); color: var(--fc-text);
+      font: inherit; font-size: 13px; font-weight: 500;
+    }
+    #fc-bridge-demo .fc-button:hover:not(:disabled) { background: var(--fc-subtle); }
+    #fc-bridge-demo .fc-button.fc-primary { border-color: var(--fc-primary); background: var(--fc-primary); color: var(--fc-primary-text); }
+    #fc-bridge-demo .fc-button.fc-primary:hover:not(:disabled) { opacity: .88; }
+    #fc-bridge-demo .fc-button:disabled { opacity: .43; }
+    #fc-bridge-demo .fc-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 16px; }
+    #fc-bridge-demo .fc-service {
+      border: 1px solid var(--fc-border); border-radius: 9px; padding: 17px 18px;
+      background: var(--fc-surface); min-width: 0;
+    }
+    #fc-bridge-demo .fc-service-row { gap: 10px; }
+    #fc-bridge-demo .fc-service-icon {
+      display: grid; place-items: center; width: 28px; height: 28px; flex: none;
+      border-radius: 7px; background: var(--fc-subtle); font-size: 13px; font-weight: 500;
+    }
+    #fc-bridge-demo .fc-service-name { font-size: 13px; font-weight: 500; }
+    #fc-bridge-demo .fc-service-state { margin-left: auto; font-size: 12px; color: var(--fc-green); white-space: nowrap; }
+    #fc-bridge-demo[data-running="false"] .fc-service-state { color: var(--fc-muted); }
+    #fc-bridge-demo .fc-service-desc { color: var(--fc-muted); font-size: 12px; margin: 9px 0 0 38px; }
+    #fc-bridge-demo .fc-section { margin-top: 29px; }
+    #fc-bridge-demo .fc-section-head { justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    #fc-bridge-demo .fc-section-head span { font-size: 12px; color: var(--fc-muted); }
+    #fc-bridge-demo .fc-folder {
+      display: flex; align-items: center; gap: 11px; min-width: 0;
+      padding: 13px 15px; border: 1px solid var(--fc-border); border-radius: 8px;
+      background: var(--fc-subtle); font-size: 13px;
+    }
+    #fc-bridge-demo .fc-folder-icon { color: var(--fc-muted); font-size: 17px; line-height: 1; }
+    #fc-bridge-demo .fc-folder-path { overflow-wrap: anywhere; }
+    #fc-bridge-demo .fc-logs-preview, #fc-bridge-demo .fc-logs-full { border-top: 1px solid var(--fc-border); }
+    #fc-bridge-demo .fc-log-line {
+      gap: 13px; min-width: 0; padding: 10px 0;
+      border-bottom: 1px solid var(--fc-border); font-size: 12px; line-height: 1.5;
+    }
+    #fc-bridge-demo .fc-log-time { color: var(--fc-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    #fc-bridge-demo .fc-log-level { color: var(--fc-green); font-weight: 500; min-width: 33px; }
+    #fc-bridge-demo .fc-log-level[data-level="WARN"] { color: var(--fc-red); }
+    #fc-bridge-demo .fc-log-message { min-width: 0; overflow-wrap: anywhere; }
+    #fc-bridge-demo .fc-settings-body { max-width: 720px; }
+    #fc-bridge-demo .fc-settings-group { margin-top: 25px; padding-top: 20px; border-top: 1px solid var(--fc-border); }
+    #fc-bridge-demo .fc-settings-group:first-of-type { margin-top: 22px; padding-top: 0; border-top: 0; }
+    #fc-bridge-demo .fc-group-head { margin-bottom: 16px; }
+    #fc-bridge-demo .fc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+    #fc-bridge-demo .fc-field { display: grid; gap: 7px; min-width: 0; }
+    #fc-bridge-demo .fc-field.fc-span { grid-column: 1 / -1; }
+    #fc-bridge-demo .fc-field label { font-size: 12px; font-weight: 500; }
+    #fc-bridge-demo .fc-input, #fc-bridge-demo .fc-textarea {
+      width: 100%; min-width: 0; border: 1px solid var(--fc-border); border-radius: 7px;
+      background: var(--fc-surface); color: var(--fc-text);
+      padding: 9px 11px; font: inherit; font-size: 13px;
+    }
+    #fc-bridge-demo .fc-input { height: 37px; }
+    #fc-bridge-demo .fc-textarea { min-height: 68px; resize: vertical; }
+    #fc-bridge-demo .fc-input::placeholder { color: var(--fc-muted); }
+    #fc-bridge-demo .fc-help { color: var(--fc-muted); font-size: 12px; line-height: 1.5; }
+    #fc-bridge-demo .fc-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; }
+    #fc-bridge-demo .fc-switch-row + .fc-switch-row { border-top: 1px solid var(--fc-border); }
+    #fc-bridge-demo .fc-switch-text { display: grid; gap: 3px; }
+    #fc-bridge-demo .fc-switch-title { font-size: 13px; font-weight: 500; }
+    #fc-bridge-demo .fc-switch-desc { color: var(--fc-muted); font-size: 12px; line-height: 1.5; }
+    #fc-bridge-demo .fc-switch {
+      appearance: none; position: relative; flex: none; width: 38px; height: 22px;
+      border-radius: 99px; border: 1px solid var(--fc-border); background: var(--fc-border);
+      margin: 0;
+    }
+    #fc-bridge-demo .fc-switch::before {
+      content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+      border-radius: 50%; background: var(--fc-window); box-shadow: 0 1px 3px #00000033;
+      transition: transform .15s ease;
+    }
+    #fc-bridge-demo .fc-switch:checked { border-color: var(--fc-primary); background: var(--fc-primary); }
+    #fc-bridge-demo .fc-switch:checked::before { transform: translateX(16px); }
+    #fc-bridge-demo .fc-settings-footer { display: flex; align-items: center; gap: 14px; margin-top: 24px; }
+    #fc-bridge-demo .fc-save-note { color: var(--fc-green); font-size: 12px; }
+    #fc-bridge-demo .fc-logs-intro { margin-top: 22px; color: var(--fc-muted); font-size: 12px; }
+    #fc-bridge-demo .fc-logs-full { margin-top: 12px; }
+    @media (max-width: 760px) {
+      #fc-bridge-demo .fc-layout { grid-template-columns: 1fr; }
+      #fc-bridge-demo .fc-sidebar { gap: 15px; padding: 15px; border-right: 0; border-bottom: 1px solid var(--fc-border); }
+      #fc-bridge-demo .fc-nav { display: flex; gap: 5px; }
+      #fc-bridge-demo .fc-nav button { width: auto; padding: 0 11px; }
+      #fc-bridge-demo .fc-sidebar-foot { display: none; }
+      #fc-bridge-demo .fc-main { padding: 25px 22px 30px; }
+    }
+    @media (max-width: 520px) {
+      #fc-bridge-demo .fc-window { border-radius: 9px; }
+      #fc-bridge-demo .fc-main { padding: 22px 16px 27px; }
+      #fc-bridge-demo .fc-grid, #fc-bridge-demo .fc-fields { grid-template-columns: 1fr; }
+      #fc-bridge-demo .fc-hero { padding: 19px 17px; }
+      #fc-bridge-demo .fc-hero-head { flex-wrap: wrap; }
+      #fc-bridge-demo .fc-version { display: none; }
+      #fc-bridge-demo .fc-log-line { flex-wrap: wrap; gap: 4px 10px; }
+      #fc-bridge-demo .fc-log-message { flex-basis: 100%; }
+    }
+  </style>
+
+  <div class="fc-window">
+    <div class="fc-titlebar" aria-label="macOS 窗口标题栏">
+      <div class="fc-title-left">
+        <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
+        <span class="fc-title">飞书 ↔ Codex</span>
+      </div>
+      <span class="fc-version">桌面桥接 · v1.0</span>
+    </div>
+    <div class="fc-layout">
+      <aside class="fc-sidebar">
+        <div class="fc-brand"><div class="fc-brand-mark" aria-hidden="true">↔</div><span class="fc-brand-name">桌面桥接</span></div>
+        <nav class="fc-nav" aria-label="主导航">
+          <button class="cursor-interaction" type="button" data-page="overview" data-active="true" aria-current="page"><i aria-hidden="true">◫</i>总览</button>
+          <button class="cursor-interaction" type="button" data-page="settings" data-active="false"><i aria-hidden="true">⚙</i>设置</button>
+          <button class="cursor-interaction" type="button" data-page="logs" data-active="false"><i aria-hidden="true">≡</i>日志</button>
+        </nav>
+        <div class="fc-sidebar-foot">在本机运行<br>仅处理允许名单内的消息</div>
+      </aside>
+
+      <main class="fc-main">
+        <section class="fc-page" data-panel="overview" aria-labelledby="fc-overview-heading">
+          <h1 id="fc-overview-heading">总览</h1>
+          <p class="fc-page-subtitle">管理飞书消息与本机 Codex 的连接。</p>
+
+          <div class="fc-hero" aria-live="polite">
+            <div class="fc-hero-head">
+              <div class="fc-status-line"><span class="fc-status-dot" aria-hidden="true"></span><span class="fc-status-title" data-status-title>桥接已停止</span></div>
+              <span class="fc-status-pill" data-status-pill>已停止</span>
+            </div>
+            <p class="fc-hero-copy">仅接收允许名单成员的私聊，或允许名单群聊中 @ 机器人的消息。</p>
+            <div class="fc-actions">
+              <button class="fc-button fc-primary cursor-interaction" type="button" data-action="start">启动桥接</button>
+              <button class="fc-button cursor-interaction" type="button" data-action="stop" disabled>停止桥接</button>
+            </div>
+          </div>
+
+          <div class="fc-grid" aria-label="服务状态">
+            <div class="fc-service">
+              <div class="fc-service-row"><span class="fc-service-icon" aria-hidden="true">飞</span><span class="fc-service-name">飞书事件连接</span><span class="fc-service-state" data-feishu-state>未连接</span></div>
+              <p class="fc-service-desc">接收消息与卡片操作</p>
+            </div>
+            <div class="fc-service">
+              <div class="fc-service-row"><span class="fc-service-icon" aria-hidden="true">C</span><span class="fc-service-name">Codex App Server</span><span class="fc-service-state" data-codex-state>未启动</span></div>
+              <p class="fc-service-desc">本机 stdio 会话</p>
+            </div>
+          </div>
+
+          <section class="fc-section" aria-labelledby="fc-folder-heading">
+            <div class="fc-section-head"><h2 id="fc-folder-heading">工作目录</h2></div>
+            <div class="fc-folder"><span class="fc-folder-icon" aria-hidden="true">▱</span><span class="fc-folder-path" data-folder-display>未设置</span></div>
+          </section>
+
+          <section class="fc-section" aria-labelledby="fc-recent-heading">
+            <div class="fc-section-head"><h2 id="fc-recent-heading">最近日志</h2><span>敏感信息已脱敏</span></div>
+            <div class="fc-logs-preview" data-recent-logs></div>
+          </section>
+        </section>
+
+        <section class="fc-page" data-panel="settings" aria-labelledby="fc-settings-heading" hidden>
+          <div class="fc-settings-body">
+            <h1 id="fc-settings-heading">设置</h1>
+            <p class="fc-page-subtitle">配置飞书应用、消息范围和启动方式。</p>
+
+            <div class="fc-settings-group">
+              <h2 class="fc-group-head">飞书应用</h2>
+              <div class="fc-fields">
+                <div class="fc-field"><label for="fc-app-id">App ID</label><input class="fc-input" id="fc-app-id" type="text" placeholder="cli_..." autocomplete="off"></div>
+                <div class="fc-field"><label for="fc-app-secret">App Secret</label><input class="fc-input" id="fc-app-secret" type="password" placeholder="输入 App Secret" autocomplete="new-password"><span class="fc-help">由飞书 CLI 安全存储。</span></div>
+              </div>
+            </div>
+
+            <div class="fc-settings-group">
+              <h2 class="fc-group-head">消息范围</h2>
+              <div class="fc-fields">
+                <div class="fc-field fc-span"><label for="fc-allowed-users">允许使用的成员 open_id</label><textarea class="fc-textarea" id="fc-allowed-users" spellcheck="false" placeholder="ou_...&#10;每行一个"></textarea><span class="fc-help">每行一个 open_id；名单外消息不会进入 Codex。</span></div>
+                <div class="fc-field fc-span"><label for="fc-allowed-chats">允许使用的群聊会话 ID</label><textarea class="fc-textarea" id="fc-allowed-chats" spellcheck="false" placeholder="oc_...&#10;每行一个"></textarea><span class="fc-help">只有名单内的群聊才可使用；还需成员在允许名单内并 @ 机器人。</span></div>
+                <div class="fc-field fc-span"><label for="fc-folder-input">工作目录</label><input class="fc-input" id="fc-folder-input" type="text" placeholder="选择工作目录" spellcheck="false"></div>
+              </div>
+              <label class="fc-switch-row cursor-interaction" for="fc-group-mention"><span class="fc-switch-text"><span class="fc-switch-title">处理群聊 @ 消息</span><span class="fc-switch-desc">仍只接受允许名单成员发起的消息</span></span><input class="fc-switch" id="fc-group-mention" type="checkbox" role="switch"></label>
+            </div>
+
+            <div class="fc-settings-group">
+              <h2 class="fc-group-head">启动方式</h2>
+              <label class="fc-switch-row cursor-interaction" for="fc-login-start"><span class="fc-switch-text"><span class="fc-switch-title">登录电脑时启动应用</span><span class="fc-switch-desc">打开桌面客户端</span></span><input class="fc-switch" id="fc-login-start" type="checkbox" role="switch"></label>
+              <label class="fc-switch-row cursor-interaction" for="fc-auto-connect"><span class="fc-switch-text"><span class="fc-switch-title">应用启动后自动连接</span><span class="fc-switch-desc">自动启动飞书与 Codex 桥接</span></span><input class="fc-switch" id="fc-auto-connect" type="checkbox" role="switch"></label>
+            </div>
+            <div class="fc-settings-footer"><button class="fc-button fc-primary cursor-interaction" type="button" data-action="save">保存设置</button><span class="fc-save-note" data-save-note aria-live="polite"></span></div>
+          </div>
+        </section>
+
+        <section class="fc-page" data-panel="logs" aria-labelledby="fc-logs-heading" hidden>
+          <h1 id="fc-logs-heading">运行日志</h1>
+          <p class="fc-page-subtitle">查看连接、消息和卡片状态。</p>
+          <p class="fc-logs-intro">密钥和消息正文不会写入日志；标识符只显示末尾几位。</p>
+          <div class="fc-logs-full" data-full-logs aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+</div>
+  <script src="./renderer.js"></script>
+</body>
+</html>

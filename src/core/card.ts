@@ -1,0 +1,144 @@
+import type { CardSnapshot } from "./types.js";
+
+// Keep the Card 2.0 layout and callback shape of the original Lark workflow card.
+export type { CardSnapshot } from "./types.js";
+
+type CardElement = Record<string, unknown>;
+
+export type LarkCard = {
+  schema: "2.0";
+  config: {
+    update_multi: true;
+    enable_forward: false;
+    width_mode: "default";
+    summary: { content: string };
+  };
+  body: {
+    direction: "vertical";
+    padding: string;
+    vertical_spacing: string;
+    elements: CardElement[];
+  };
+};
+
+function markdown(content: string): CardElement {
+  return { tag: "markdown", content };
+}
+
+function button(
+  snapshot: CardSnapshot,
+  label: string,
+  action: "stop_session" | "question_answer" | "permission_allow" | "permission_deny",
+  answer?: string,
+  type = "default",
+): CardElement {
+  return {
+    tag: "button",
+    text: { tag: "plain_text", content: label },
+    type,
+    width: action === "stop_session" ? "default" : "fill",
+    behaviors: [{
+      type: "callback",
+      value: {
+        v: 1,
+        action,
+        sessionId: snapshot.sessionId,
+        cardVersion: snapshot.version,
+        ...(answer ? { answer } : {}),
+      },
+    }],
+    ...(action === "stop_session" ? {
+      confirm: {
+        title: { tag: "plain_text", content: "停止当前任务？" },
+        text: { tag: "plain_text", content: "Codex 将停止当前处理。" },
+      },
+    } : {}),
+  };
+}
+
+function row(buttons: CardElement[]): CardElement {
+  return {
+    tag: "column_set",
+    flex_mode: "none",
+    horizontal_spacing: "8px",
+    columns: buttons.map((item) => ({
+      tag: "column",
+      width: "weighted",
+      weight: 1,
+      elements: [item],
+    })),
+  };
+}
+
+function quotedPrompt(prompt: string): CardElement[] {
+  const chars = Array.from(prompt.trim());
+  const chunks: CardElement[] = [];
+  for (let i = 0; i < chars.length; i += 600) {
+    const chunk = chars.slice(i, i + 600).join("");
+    chunks.push(markdown(`> ${chunk.replace(/\r?\n/g, "\n> ")}`));
+  }
+  return chunks;
+}
+
+export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
+  const elements: CardElement[] = quotedPrompt(snapshot.prompt);
+
+  if (snapshot.details?.length) {
+    elements.push({
+      tag: "collapsible_panel",
+      expanded: false,
+      header: { title: { tag: "plain_text", content: "执行过程" } },
+      elements: [markdown(snapshot.details.slice(-10).map((line) => `• ${line}`).join("\n"))],
+    });
+  }
+  const summary = snapshot.summary?.trim();
+  if (summary && !((snapshot.status === "running" && summary === "正在执行…")
+    || (snapshot.status === "stopped" && summary === "已停止"))) {
+    elements.push(markdown(summary));
+  }
+
+  if (snapshot.status === "running") {
+    elements.push(markdown("<font color='blue'>正在执行…</font>"));
+    elements.push(row([button(snapshot, "停止", "stop_session")]));
+  } else if (snapshot.status === "question" && snapshot.question) {
+    elements.push(markdown(`**请回答以下问题**\n${snapshot.question.text}`));
+    const options = snapshot.question.options?.slice(0, 6) ?? [];
+    if (options.length) {
+      for (let i = 0; i < options.length; i += 2) {
+        elements.push(row(options.slice(i, i + 2).map((option) =>
+          button(snapshot, option, "question_answer", option, i === 0 ? "primary_filled" : "default"))));
+      }
+    } else {
+      elements.push(markdown(snapshot.chatType === "group"
+        ? "<font color='grey'>请回复这条飞书消息，并 @ 机器人。</font>"
+        : "<font color='grey'>请直接回复这条飞书消息。</font>"));
+    }
+    elements.push(row([button(snapshot, "取消", "permission_deny")]));
+  } else if (snapshot.status === "approval" && snapshot.approval) {
+    elements.push(markdown(`**等待确认**\n${snapshot.approval.title}${snapshot.approval.detail ? `\n${snapshot.approval.detail}` : ""}`));
+    elements.push(row([
+      button(snapshot, "允许一次", "permission_allow", undefined, "primary_filled"),
+      button(snapshot, "拒绝", "permission_deny", undefined, "danger"),
+    ]));
+  } else if (snapshot.status === "stopped") {
+    elements.push(markdown("<font color='grey'>已停止</font>"));
+  } else if (snapshot.status === "failed") {
+    elements.push(markdown("<font color='red'>执行遇到问题</font>"));
+  }
+
+  return {
+    schema: "2.0",
+    config: {
+      update_multi: true,
+      enable_forward: false,
+      width_mode: "default",
+      summary: { content: `Codex · ${snapshot.status === "running" ? "正在执行" : snapshot.status === "completed" ? "已完成" : snapshot.status === "stopped" ? "已停止" : snapshot.status === "failed" ? "失败" : "等待回复"}` },
+    },
+    body: {
+      direction: "vertical",
+      padding: "12px 16px 12px 16px",
+      vertical_spacing: "6px",
+      elements,
+    },
+  };
+}

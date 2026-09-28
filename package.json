@@ -1,0 +1,49 @@
+{
+  "name": "feishu-codex-bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Feishu to Codex desktop bridge",
+  "main": "dist/desktop/main.cjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && npm run prepare:binaries && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test",
+    "prepare:binaries": "node scripts/prepare-binaries.mjs",
+    "package:mac": "npm run build && npm run prepare:binaries && electron-builder --mac dmg --arm64"
+  },
+  "devDependencies": {
+    "@openai/codex": "0.158.0",
+    "@types/node": "^24.0.0",
+    "electron": "44.4.5",
+    "electron-builder": "26.7.0",
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3"
+  },
+  "build": {
+    "appId": "com.feishucodex.bridge",
+    "productName": "飞书 Codex 桥接",
+    "asar": true,
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "build/bin", "to": "bin" },
+      { "from": "build/licenses", "to": "licenses" },
+      { "from": "resources/trayTemplate.png", "to": "trayTemplate.png" },
+      { "from": "resources/icon.png", "to": "icon.png" }
+    ],
+    "directories": { "output": "release" },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [{ "target": "dmg", "arch": ["arm64"] }],
+      "identity": "-",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "notarize": false,
+      "icon": "resources/icon.png"
+    },
+    "dmg": { "title": "飞书 Codex 桥接 ${version}" }
+  }
+}
