@@ -67,6 +67,9 @@
     #fc-bridge-demo .fc-traffic button:nth-child(2) { background: #febc2e; }
     #fc-bridge-demo .fc-traffic button:nth-child(3) { background: #28c840; }
     #fc-bridge-demo .fc-traffic button:hover { filter: brightness(.82); }
+    html.fc-native-mac #fc-bridge-demo .fc-window { border: 0; border-radius: 0; box-shadow: none; }
+    html.fc-native-mac #fc-bridge-demo .fc-titlebar { padding-left: 86px; }
+    html.fc-native-mac #fc-bridge-demo .fc-traffic { display: none; }
     #fc-bridge-demo .fc-title { font-size: 13px; font-weight: 500; white-space: nowrap; }
     #fc-bridge-demo .fc-version { font-size: 12px; color: var(--fc-muted); }
     #fc-bridge-demo .fc-layout { display: grid; grid-template-columns: 194px minmax(0, 1fr); min-height: 597px; }
@@ -228,7 +231,7 @@
         <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
         <span class="fc-title">飞书桥接Codex</span>
       </div>
-      <span class="fc-version">v1.0.2</span>
+      <span class="fc-version">v1.0.3</span>
     </div>
     <div class="fc-layout">
       <aside class="fc-sidebar">
@@ -301,6 +304,17 @@
                 <div class="fc-field fc-span"><label for="fc-folder-input">工作目录</label><input class="fc-input" id="fc-folder-input" type="text" placeholder="选择工作目录" spellcheck="false"></div>
               </div>
               <label class="fc-switch-row cursor-interaction" for="fc-group-mention"><span class="fc-switch-text"><span class="fc-switch-title">处理群聊 @ 消息</span><span class="fc-switch-desc">仍只接受允许名单成员发起的消息</span></span><input class="fc-switch" id="fc-group-mention" type="checkbox" role="switch"></label>
+            </div>
+
+            <div class="fc-settings-group">
+              <h2 class="fc-group-head">Codex 处理</h2>
+              <div class="fc-fields">
+                <div class="fc-field"><label for="fc-model">模型</label><select class="fc-input" id="fc-model"></select></div>
+                <div class="fc-field"><label for="fc-effort">推理强度</label><select class="fc-input" id="fc-effort"></select></div>
+                <div class="fc-field"><label for="fc-session-timeout">会话空闲超时（小时）</label><input class="fc-input" id="fc-session-timeout" type="number" min="1" step="1"><span class="fc-help">默认 24 小时；超时后下一条消息会新建会话。</span></div>
+                <div class="fc-field"><span class="fc-help" data-model-help>正在读取 Codex 模型列表…</span><button class="fc-button cursor-interaction" type="button" data-action="refresh-models">刷新模型列表</button></div>
+              </div>
+              <p class="fc-help" style="margin-top: 12px">固定权限：完全访问，无需审批。仅允许名单内成员使用。</p>
             </div>
 
             <div class="fc-settings-group">

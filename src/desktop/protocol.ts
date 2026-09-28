@@ -1,4 +1,5 @@
 import type { BridgeSettings, BridgeStatus } from '../core/types';
+import type { CodexModel } from '../core/codex';
 
 export type LogEntry = {
   time: string;
@@ -17,6 +18,7 @@ export type SettingsInput = BridgeSettings & { appSecret: string };
 
 export type DesktopApi = {
   getSnapshot(): Promise<DesktopSnapshot>;
+  listModels(): Promise<CodexModel[]>;
   saveSettings(settings: SettingsInput): Promise<DesktopSnapshot>;
   start(): Promise<DesktopSnapshot>;
   stop(): Promise<DesktopSnapshot>;

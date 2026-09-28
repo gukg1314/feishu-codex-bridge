@@ -164,6 +164,8 @@ async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
   if (wasRunning && connectionChanged) {
     await stopBridge();
     await startBridge();
+  } else if (wasRunning) {
+    await bridge?.updateSettings(next);
   }
   publish();
   return snapshot();
@@ -189,9 +191,11 @@ function updateTray(): void {
 }
 
 function createWindow(): void {
+  const nativeMacTitleBar = process.platform === 'darwin';
   window = new BrowserWindow({
     width: 1080, height: 730, minWidth: 760, minHeight: 650,
-    frame: false, show: false, backgroundColor: '#ffffff',
+    frame: nativeMacTitleBar, titleBarStyle: nativeMacTitleBar ? 'hiddenInset' : undefined,
+    show: false, backgroundColor: '#ffffff',
     icon: app.isPackaged
       ? path.join(process.resourcesPath, 'main.png')
       : path.resolve(__dirname, '../../icon/main.png'),
@@ -240,6 +244,15 @@ void app.whenReady().then(async () => {
   applyLoginItem(saved.settings);
 
   ipcMain.handle('bridge:get-snapshot', () => snapshot());
+  ipcMain.handle('bridge:list-models', async () => {
+    const client = new CodexClient({ binaryPath: binaryPath('codex'), log: recordLog });
+    await client.start();
+    try {
+      return await client.listModels();
+    } finally {
+      await client.stop();
+    }
+  });
   ipcMain.handle('bridge:save-settings', (_event, input: SettingsInput) => serialize(() => updateSettings(input)));
   ipcMain.handle('bridge:start', () => serialize(async () => { await startBridge(); return snapshot(); }));
   ipcMain.handle('bridge:stop', () => serialize(async () => { await stopBridge(); return snapshot(); }));

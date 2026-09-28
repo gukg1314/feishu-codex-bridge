@@ -13,6 +13,9 @@ export function defaultSettings(): SavedSettings {
       allowedOpenIds: [],
       allowedChatIds: [],
       workingDirectory: homedir(),
+      model: 'gpt-6-sol',
+      effort: 'max',
+      sessionTimeoutHours: 24,
       allowGroupMentions: false,
       launchAtLogin: false,
       autoConnect: false
@@ -55,6 +58,11 @@ export async function validateSettings(input: SettingsInput): Promise<BridgeSett
   if (typeof input.workingDirectory !== 'string' || !input.workingDirectory.trim()) {
     throw new Error('请选择工作目录');
   }
+  if (typeof input.model !== 'string' || !input.model.trim()) throw new Error('请选择 Codex 模型');
+  if (typeof input.effort !== 'string') throw new Error('模型推理强度格式无效');
+  if (!Number.isSafeInteger(input.sessionTimeoutHours) || input.sessionTimeoutHours < 1) {
+    throw new Error('会话超时必须是至少 1 小时的整数');
+  }
   const workingDirectory = path.resolve(input.workingDirectory.trim());
   try {
     if (!(await stat(workingDirectory)).isDirectory()) throw new Error('工作目录不是文件夹');
@@ -70,6 +78,9 @@ export async function validateSettings(input: SettingsInput): Promise<BridgeSett
     allowedOpenIds: [...new Set(input.allowedOpenIds)],
     allowedChatIds: [...new Set(input.allowedChatIds)],
     workingDirectory,
+    model: input.model.trim(),
+    effort: input.effort.trim(),
+    sessionTimeoutHours: input.sessionTimeoutHours,
     allowGroupMentions: input.allowGroupMentions,
     launchAtLogin: input.launchAtLogin,
     autoConnect: input.autoConnect

@@ -107,12 +107,10 @@ export class Bridge {
   }
 
   async updateSettings(settings: BridgeSettings): Promise<void> {
-    const wasRunning = this.state === 'running';
-    if (wasRunning) await this.stop();
     this.settings = settings;
     await this.options.lark.updateSettings?.(settings);
-    if (wasRunning) await this.start();
-    else this.report();
+    this.options.log('INFO', `Bridge model ${settings.model}, effort ${settings.effort}, idle timeout ${settings.sessionTimeoutHours}h`);
+    this.report();
   }
 
   private async onMessage(message: IncomingMessage): Promise<void> {
@@ -181,6 +179,7 @@ export class Bridge {
   }
 
   private async processMessage(route: string, message: IncomingMessage, generation: number): Promise<void> {
+    const settings = this.settings;
     const prompt = message.text || message.attachments.map((item) => item.name || item.path).join('、') || '附件';
     const snapshot: CardSnapshot = {
       sessionId: message.messageId,
@@ -211,34 +210,38 @@ export class Bridge {
     });
 
     try {
-      let threadId = this.store.getThread(message.chatId, message.senderOpenId);
+      const stored = this.store.getThread(message.chatId, message.senderOpenId);
+      const expired = stored && Date.now() - stored.lastActiveAt >= settings.sessionTimeoutHours * 3_600_000;
+      let threadId = expired ? undefined : stored?.threadId;
+      if (expired) this.options.log('INFO', `Codex session idle for ${settings.sessionTimeoutHours} hours; creating a new thread`);
       if (threadId) {
         try {
-          await this.options.codex.resumeThread(threadId, this.settings.workingDirectory);
+          await this.options.codex.resumeThread(threadId, settings.workingDirectory, settings.model, settings.effort);
         } catch {
           this.options.log('WARN', 'Stored Codex thread could not be resumed; creating a new thread');
           threadId = undefined;
         }
       }
       if (!threadId) {
-        threadId = await this.options.codex.startThread(this.settings.workingDirectory);
+        threadId = await this.options.codex.startThread(settings.workingDirectory, settings.model, settings.effort);
         await this.store.setThread(message.chatId, message.senderOpenId, threadId);
       }
       active.threadId = threadId;
       if (active.stopRequested || generation !== this.generation) return;
       const instruction = '若生成需要回传的本地图片或文件，请在最终回复中使用指向绝对路径的 Markdown 链接。';
-      const run = await this.options.codex.startTurn(threadId, `${message.text}\n\n${instruction}`.trim(), message.attachments, this.settings.workingDirectory, {
+      const run = await this.options.codex.startTurn(threadId, `${message.text}\n\n${instruction}`.trim(), message.attachments, settings.workingDirectory, {
         onProgress: (text) => this.onProgress(active, text),
         onQuestion: (request) => this.enqueuePrompt(active, { kind: 'question', value: request }),
         onApproval: (request) => this.enqueuePrompt(active, { kind: 'approval', value: request }),
         onPromptResolved: (id) => this.resolvePrompt(active, id),
-      });
+      }, settings.model, settings.effort);
       active.turnId = run.turnId;
       if (active.stopRequested || generation !== this.generation) {
         await this.options.codex.interrupt(threadId, run.turnId).catch(() => undefined);
       }
       const result = await run.completed;
       if (generation !== this.generation) return;
+      await this.store.touchThread(message.chatId, message.senderOpenId, threadId);
       await this.finish(active, result);
     } finally {
       await this.clearReaction(active);

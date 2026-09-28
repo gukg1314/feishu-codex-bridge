@@ -3,6 +3,7 @@ import type { DesktopApi, DesktopSnapshot, SettingsInput } from './protocol';
 
 const api: DesktopApi = {
   getSnapshot: () => ipcRenderer.invoke('bridge:get-snapshot'),
+  listModels: () => ipcRenderer.invoke('bridge:list-models'),
   saveSettings: (settings: SettingsInput) => ipcRenderer.invoke('bridge:save-settings', settings),
   start: () => ipcRenderer.invoke('bridge:start'),
   stop: () => ipcRenderer.invoke('bridge:stop'),

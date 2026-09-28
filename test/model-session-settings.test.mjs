@@ -1,0 +1,145 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { buildSync } from 'esbuild';
+import test from 'node:test';
+
+const require = createRequire(import.meta.url);
+
+function loadTypeScript(entry) {
+  const built = buildSync({ entryPoints: [resolve(entry)], bundle: true, platform: 'node', format: 'cjs', write: false });
+  const loaded = { exports: {} };
+  new Function('require', 'module', 'exports', built.outputFiles[0].text)(require, loaded, loaded.exports);
+  return loaded.exports;
+}
+
+const { CodexClient } = loadTypeScript('src/core/codex.ts');
+const { RouteStore } = loadTypeScript('src/core/routes.ts');
+const { defaultSettings, loadSettings, validateSettings } = loadTypeScript('src/desktop/settings.ts');
+
+test('Codex 模型目录分页并解析显示名、默认强度和支持的强度', async () => {
+  const requests = [];
+  const client = new CodexClient({ binaryPath: 'unused', log: () => {} });
+  client.request = async (method, params) => {
+    requests.push({ method, params });
+    if (!params.cursor) return {
+      data: [
+        {
+          model: 'gpt-6-astra', displayName: 'Astra', description: '旗舰模型', hidden: true,
+          isDefault: false, defaultReasoningEffort: 'high',
+          supportedReasoningEfforts: [
+            { reasoningEffort: 'high', description: '高' },
+            { reasoningEffort: 12, description: '无效项' },
+            { reasoningEffort: 'max' },
+          ],
+        },
+        { model: 12 },
+      ],
+      nextCursor: 'page-2',
+    };
+    return { data: [{ model: 'gpt-6-sol', isDefault: true }] };
+  };
+
+  const models = await client.listModels();
+  assert.deepEqual(requests, [
+    { method: 'model/list', params: { includeHidden: true } },
+    { method: 'model/list', params: { includeHidden: true, cursor: 'page-2' } },
+  ]);
+  assert.deepEqual(models, [
+    {
+      id: 'gpt-6-astra', displayName: 'Astra', description: '旗舰模型', hidden: true, isDefault: false,
+      defaultReasoningEffort: 'high',
+      reasoningEfforts: [{ reasoningEffort: 'high', description: '高' }, { reasoningEffort: 'max', description: '' }],
+    },
+    {
+      id: 'gpt-6-sol', displayName: 'gpt-6-sol', description: '', hidden: false, isDefault: true,
+      defaultReasoningEffort: '', reasoningEfforts: [],
+    },
+  ]);
+});
+
+test('线程和 turn 请求使用所选模型与权限参数', async () => {
+  const requests = [];
+  const client = new CodexClient({ binaryPath: 'unused', log: () => {} });
+  client.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'thread/start') return { thread: { id: 'thread-1' } };
+    if (method === 'turn/start') return { turn: { id: 'turn-1' } };
+    return {};
+  };
+
+  assert.equal(await client.startThread('/tmp/work', 'gpt-6-sol', 'max'), 'thread-1');
+  await client.resumeThread('thread-1', '/tmp/work', 'gpt-6-sol', 'max');
+  const events = {
+    onProgress() {}, onQuestion() {}, onApproval() {},
+  };
+  await client.startTurn('thread-1', '继续', [], '/tmp/work', events, 'gpt-6-sol', 'max');
+  await client.startTurn('thread-2', '自动选择强度', [], '/tmp/work', events, 'gpt-6-mini', '');
+
+  assert.deepEqual(requests[0], {
+    method: 'thread/start',
+    params: { cwd: '/tmp/work', model: 'gpt-6-sol', approvalPolicy: 'never', sandbox: 'danger-full-access', serviceName: 'feishu_codex_bridge' },
+  });
+  assert.deepEqual(requests[1], {
+    method: 'thread/resume',
+    params: { threadId: 'thread-1', cwd: '/tmp/work', model: 'gpt-6-sol', approvalPolicy: 'never', sandbox: 'danger-full-access', excludeTurns: true },
+  });
+  assert.deepEqual(requests[2].params, {
+    threadId: 'thread-1', cwd: '/tmp/work', input: [{ type: 'text', text: '继续', text_elements: [] }],
+    model: 'gpt-6-sol', effort: 'max', approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' },
+  });
+  assert.equal('effort' in requests[3].params, false);
+});
+
+test('旧设置补齐默认模型、强度和超时，目录与新增字段可校验', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-settings-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const defaults = defaultSettings();
+  assert.equal(defaults.settings.model, 'gpt-6-sol');
+  assert.equal(defaults.settings.effort, 'max');
+  assert.equal(defaults.settings.sessionTimeoutHours, 24);
+
+  const settingsFile = join(directory, 'settings.json');
+  await writeFile(settingsFile, JSON.stringify({
+    credentialsConfigured: true,
+    settings: {
+      appId: 'cli_legacy', allowedOpenIds: ['ou_owner'], allowedChatIds: ['oc_allowed'],
+      workingDirectory: directory, allowGroupMentions: true, launchAtLogin: false, autoConnect: false,
+    },
+  }));
+  const migrated = await loadSettings(settingsFile);
+  assert.deepEqual(
+    [migrated.settings.model, migrated.settings.effort, migrated.settings.sessionTimeoutHours],
+    ['gpt-6-sol', 'max', 24],
+  );
+
+  const validInput = {
+    appId: ' cli_new ', appSecret: 'secret', allowedOpenIds: ['ou_owner'], allowedChatIds: ['oc_allowed'],
+    workingDirectory: ` ${directory}/. `, model: ' gpt-6-astra ', effort: ' high ', sessionTimeoutHours: 12,
+    allowGroupMentions: false, launchAtLogin: false, autoConnect: false,
+  };
+  const validated = await validateSettings(validInput);
+  assert.equal(validated.workingDirectory, resolve(directory));
+  assert.deepEqual([validated.model, validated.effort, validated.sessionTimeoutHours], ['gpt-6-astra', 'high', 12]);
+  await assert.rejects(validateSettings({ ...validInput, sessionTimeoutHours: 1.5 }), /会话超时/);
+});
+
+test('旧字符串路线迁移为带最后活跃时间的路线记录', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-route-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, 'bridge-routes.json');
+  const routeKey = JSON.stringify(['oc_allowed', 'ou_owner']);
+  await writeFile(file, JSON.stringify({ routes: { [routeKey]: 'legacy-thread' }, seen: ['seen-message'] }));
+
+  const beforeLoad = Date.now();
+  const store = new RouteStore(directory);
+  await store.load();
+  const migratedAt = store.getThread('oc_allowed', 'ou_owner').lastActiveAt;
+  assert.equal(store.getThread('oc_allowed', 'ou_owner').threadId, 'legacy-thread');
+  assert.ok(migratedAt >= beforeLoad && migratedAt <= Date.now());
+  assert.equal(store.hasSeen('seen-message'), true);
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.deepEqual(saved.routes[routeKey], { threadId: 'legacy-thread', lastActiveAt: migratedAt });
+});

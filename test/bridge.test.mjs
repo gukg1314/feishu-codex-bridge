@@ -24,6 +24,9 @@ const settings = {
   allowedOpenIds: ['ou_owner'],
   allowedChatIds: ['oc_allowed'],
   workingDirectory: '/tmp',
+  model: 'gpt-6-sol',
+  effort: 'max',
+  sessionTimeoutHours: 24,
   allowGroupMentions: true,
   launchAtLogin: false,
   autoConnect: false,
@@ -74,19 +77,27 @@ class FakeLark {
 
 class FakeCodex {
   turns = [];
+  startedThreads = [];
+  resumedThreads = [];
   interrupted = [];
   questions = [];
   approvals = [];
 
   async start() {}
   async stop() {}
-  async startThread() { return 'thread_1'; }
-  async resumeThread() {}
-  async startTurn(threadId, text, attachments, cwd, events) {
+  async startThread(cwd, model, effort) {
+    const threadId = `thread_${this.startedThreads.length + 1}`;
+    this.startedThreads.push({ threadId, cwd, model, effort });
+    return threadId;
+  }
+  async resumeThread(threadId, cwd, model, effort) {
+    this.resumedThreads.push({ threadId, cwd, model, effort });
+  }
+  async startTurn(threadId, text, attachments, cwd, events, model, effort) {
     let complete;
     const completed = new Promise((resolveTurn) => { complete = resolveTurn; });
     const turnId = `turn_${this.turns.length + 1}`;
-    this.turns.push({ threadId, turnId, text, attachments, cwd, events, complete });
+    this.turns.push({ threadId, turnId, text, attachments, cwd, events, model, effort, complete });
     return { turnId, completed };
   }
   async interrupt(threadId, turnId) { this.interrupted.push({ threadId, turnId }); }
@@ -94,11 +105,12 @@ class FakeCodex {
   answerApproval(id, approved) { this.approvals.push({ id, approved }); }
 }
 
-async function harness(t) {
+async function harness(t, { routeData, settingsOverrides = {} } = {}) {
   const storageDir = await mkdtemp(join(tmpdir(), 'feishu-codex-bridge-test-'));
+  if (routeData) await writeFile(join(storageDir, 'bridge-routes.json'), JSON.stringify(routeData));
   const lark = new FakeLark();
   const codex = new FakeCodex();
-  const bridge = new Bridge({ settings, lark, codex, storageDir, log: () => {} });
+  const bridge = new Bridge({ settings: { ...settings, ...settingsOverrides }, lark, codex, storageDir, log: () => {} });
   t.after(async () => {
     for (const turn of codex.turns) turn.complete({ status: 'interrupted', text: '' });
     await bridge.stop();
@@ -107,6 +119,43 @@ async function harness(t) {
   await bridge.start();
   return { bridge, lark, codex, storageDir };
 }
+
+test('模型参数贯穿新建线程、恢复线程与 turn', async (t) => {
+  const { lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_model_first'));
+  await waitFor(() => codex.turns.length === 1);
+  assert.deepEqual(codex.startedThreads[0], {
+    threadId: 'thread_1', cwd: '/tmp', model: 'gpt-6-sol', effort: 'max',
+  });
+  assert.equal(codex.turns[0].model, 'gpt-6-sol');
+  assert.equal(codex.turns[0].effort, 'max');
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[0].snapshot.status === 'completed');
+
+  await lark.emitMessage(message('om_model_second'));
+  await waitFor(() => codex.turns.length === 2);
+  assert.deepEqual(codex.resumedThreads[0], {
+    threadId: 'thread_1', cwd: '/tmp', model: 'gpt-6-sol', effort: 'max',
+  });
+  assert.equal(codex.startedThreads.length, 1);
+  codex.turns[1].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[1].snapshot.status === 'completed');
+});
+
+test('超时的已保存会话会新建线程', async (t) => {
+  const routeKey = JSON.stringify(['oc_allowed', 'ou_owner']);
+  const lastActiveAt = Date.now() - 25 * 60 * 60 * 1000;
+  const { lark, codex } = await harness(t, {
+    routeData: { routes: { [routeKey]: { threadId: 'stale_thread', lastActiveAt } }, seen: [] },
+  });
+  await lark.emitMessage(message('om_timeout'));
+  await waitFor(() => codex.turns.length === 1);
+  assert.equal(codex.resumedThreads.length, 0);
+  assert.equal(codex.startedThreads.length, 1);
+  assert.equal(codex.turns[0].threadId, 'thread_1');
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[0].snapshot.status === 'completed');
+});
 
 test('成员和群白名单、@ 条件、消息去重及 GLANCE 清理', async (t) => {
   const { lark, codex } = await harness(t);
@@ -159,7 +208,7 @@ test('消息到完成卡片：图片和 Excel 双向传递，链接保留', asyn
 });
 
 test('提问回复、审批和停止卡片回调', async (t) => {
-  const { lark, codex } = await harness(t);
+  const { bridge, lark, codex } = await harness(t);
 
   await lark.emitMessage(message('om_question'));
   await waitFor(() => codex.turns.length === 1);
@@ -191,4 +240,5 @@ test('提问回复、审批和停止卡片回调', async (t) => {
   await waitFor(() => lark.removedReactions.length === 3);
   assert.deepEqual(lark.removedReactions[2], { messageId: 'om_stop', reactionId: 'reaction_3' });
   codex.turns[2].complete({ status: 'interrupted', text: '' });
+  await waitFor(() => bridge.getStatus().activeTurns === 0);
 });

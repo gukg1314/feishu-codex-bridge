@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 interface RouteData {
-  routes: Record<string, string>;
+  routes: Record<string, { threadId: string; lastActiveAt: number }>;
   seen: string[];
 }
 
@@ -20,23 +20,35 @@ export class RouteStore {
 
   async load(): Promise<void> {
     try {
-      const value = JSON.parse(await readFile(this.file, 'utf8')) as RouteData;
+      const value = JSON.parse(await readFile(this.file, 'utf8')) as { routes?: Record<string, string | { threadId: string; lastActiveAt: number }>; seen?: string[] };
+      const routes = Object.entries(value.routes ?? {});
+      const migratedAt = Date.now();
       this.data = {
-        routes: value.routes && typeof value.routes === 'object' ? value.routes : {},
+        routes: Object.fromEntries(routes.map(([key, route]) => [key, typeof route === 'string'
+          ? { threadId: route, lastActiveAt: migratedAt }
+          : route])),
         seen: Array.isArray(value.seen) ? value.seen.slice(-MAX_SEEN) : [],
       };
       this.seen = new Set(this.data.seen);
+      if (routes.some(([, route]) => typeof route === 'string')) await this.save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
 
-  getThread(chatId: string, senderOpenId: string): string | undefined {
+  getThread(chatId: string, senderOpenId: string): { threadId: string; lastActiveAt: number } | undefined {
     return this.data.routes[JSON.stringify([chatId, senderOpenId])];
   }
 
   async setThread(chatId: string, senderOpenId: string, threadId: string): Promise<void> {
-    this.data.routes[JSON.stringify([chatId, senderOpenId])] = threadId;
+    this.data.routes[JSON.stringify([chatId, senderOpenId])] = { threadId, lastActiveAt: Date.now() };
+    await this.save();
+  }
+
+  async touchThread(chatId: string, senderOpenId: string, threadId: string): Promise<void> {
+    const route = this.getThread(chatId, senderOpenId);
+    if (!route || route.threadId !== threadId) return;
+    route.lastActiveAt = Date.now();
     await this.save();
   }
 

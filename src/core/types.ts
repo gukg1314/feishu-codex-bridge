@@ -3,6 +3,9 @@ export interface BridgeSettings {
   allowedOpenIds: string[];
   allowedChatIds: string[];
   workingDirectory: string;
+  model: string;
+  effort: string;
+  sessionTimeoutHours: number;
   allowGroupMentions: boolean;
   launchAtLogin: boolean;
   autoConnect: boolean;

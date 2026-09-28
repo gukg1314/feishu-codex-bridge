@@ -35,12 +35,23 @@ export interface CodexRun {
   completed: Promise<CodexTurnResult>;
 }
 
+export interface CodexModel {
+  id: string;
+  displayName: string;
+  description: string;
+  hidden: boolean;
+  isDefault: boolean;
+  defaultReasoningEffort: string;
+  reasoningEfforts: { reasoningEffort: string; description: string }[];
+}
+
 export interface CodexPort {
   start(): Promise<void>;
   stop(): Promise<void>;
-  startThread(cwd: string): Promise<string>;
-  resumeThread(threadId: string, cwd: string): Promise<void>;
-  startTurn(threadId: string, text: string, attachments: IncomingAttachment[], cwd: string, events: CodexTurnEvents): Promise<CodexRun>;
+  listModels(): Promise<CodexModel[]>;
+  startThread(cwd: string, model: string, effort: string): Promise<string>;
+  resumeThread(threadId: string, cwd: string, model: string, effort: string): Promise<void>;
+  startTurn(threadId: string, text: string, attachments: IncomingAttachment[], cwd: string, events: CodexTurnEvents, model: string, effort: string): Promise<CodexRun>;
   interrupt(threadId: string, turnId: string): Promise<void>;
   answerQuestion(id: RequestId, answer: string): void;
   answerApproval(id: RequestId, approved: boolean): void;
@@ -95,7 +106,7 @@ export class CodexClient implements CodexPort {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'feishu_codex_bridge', title: '飞书桥接Codex', version: '1.0.2' },
+        clientInfo: { name: 'feishu_codex_bridge', title: '飞书桥接Codex', version: '1.0.3' },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       this.send({ method: 'initialized', params: {} });
@@ -120,29 +131,62 @@ export class CodexClient implements CodexPort {
     }
   }
 
-  async startThread(cwd: string): Promise<string> {
+  async listModels(): Promise<CodexModel[]> {
+    const models: CodexModel[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await this.request('model/list', { includeHidden: true, ...(cursor ? { cursor } : {}) });
+      if (!Array.isArray(response.data)) throw new Error('Codex did not return a model list');
+      for (const item of response.data as JsonObject[]) {
+        const id = item.model;
+        if (typeof id !== 'string') continue;
+        const efforts = Array.isArray(item.supportedReasoningEfforts)
+          ? item.supportedReasoningEfforts as JsonObject[] : [];
+        models.push({
+          id,
+          displayName: typeof item.displayName === 'string' ? item.displayName : id,
+          description: typeof item.description === 'string' ? item.description : '',
+          hidden: item.hidden === true,
+          isDefault: item.isDefault === true,
+          defaultReasoningEffort: typeof item.defaultReasoningEffort === 'string' ? item.defaultReasoningEffort : '',
+          reasoningEfforts: efforts.flatMap((option) => typeof option.reasoningEffort === 'string'
+            ? [{ reasoningEffort: option.reasoningEffort, description: typeof option.description === 'string' ? option.description : '' }]
+            : []),
+        });
+      }
+      cursor = typeof response.nextCursor === 'string' ? response.nextCursor : undefined;
+    } while (cursor);
+    this.options.log('INFO', `Codex model catalog loaded (${models.length} models)`);
+    return models;
+  }
+
+  async startThread(cwd: string, model: string, effort: string): Promise<string> {
     const response = await this.request('thread/start', {
       cwd,
-      approvalPolicy: 'on-request',
-      sandbox: 'workspace-write',
+      model,
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
       serviceName: 'feishu_codex_bridge',
     });
     const id = (response.thread as JsonObject | undefined)?.id;
     if (typeof id !== 'string') throw new Error('Codex did not return a thread ID');
+    this.options.log('INFO', `Codex thread started (model=${model}, effort=${effort || 'default'}, approval=never, sandbox=danger-full-access)`);
     return id;
   }
 
-  async resumeThread(threadId: string, cwd: string): Promise<void> {
+  async resumeThread(threadId: string, cwd: string, model: string, effort: string): Promise<void> {
     await this.request('thread/resume', {
       threadId,
       cwd,
-      approvalPolicy: 'on-request',
-      sandbox: 'workspace-write',
+      model,
+      approvalPolicy: 'never',
+      sandbox: 'danger-full-access',
       excludeTurns: true,
     });
+    this.options.log('INFO', `Codex thread resumed (model=${model}, effort=${effort || 'default'}, approval=never, sandbox=danger-full-access)`);
   }
 
-  async startTurn(threadId: string, text: string, attachments: IncomingAttachment[], cwd: string, events: CodexTurnEvents): Promise<CodexRun> {
+  async startTurn(threadId: string, text: string, attachments: IncomingAttachment[], cwd: string, events: CodexTurnEvents, model: string, effort: string): Promise<CodexRun> {
     if (this.turns.has(threadId)) throw new Error('A Codex turn is already running for this route');
     const paths = attachments.filter((item) => item.kind === 'file').map((item) => item.path);
     const prompt = paths.length ? `${text}\n\n附件文件（可按需读取）：\n${paths.join('\n')}` : text;
@@ -155,10 +199,15 @@ export class CodexClient implements CodexPort {
     const running: RunningTurn = { threadId, events, messages: new Map(), resolve, completed };
     this.turns.set(threadId, running);
     try {
-      const response = await this.request('turn/start', { threadId, cwd, input });
+      const response = await this.request('turn/start', {
+        threadId, cwd, input, model, ...(effort ? { effort } : {}),
+        approvalPolicy: 'never',
+        sandboxPolicy: { type: 'dangerFullAccess' },
+      });
       const turnId = (response.turn as JsonObject | undefined)?.id;
       if (typeof turnId !== 'string') throw new Error('Codex did not return a turn ID');
       running.turnId = turnId;
+      this.options.log('INFO', `Codex turn started (model=${model}, effort=${effort || 'default'}, approval=never, sandbox=danger-full-access)`);
       return { turnId, completed };
     } catch (error) {
       this.turns.delete(threadId);
