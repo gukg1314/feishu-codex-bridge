@@ -73,7 +73,7 @@ function renderEfforts(preferred: string): void {
 
 function renderModelSettings(modelId: string, effort: string): void {
   const select = find<HTMLSelectElement>('#fc-model');
-  select.replaceChildren(...models.map((item) => option(item.id, item.displayName === item.id ? item.id : `${item.displayName} · ${item.id}`)));
+  select.replaceChildren(...models.map((item) => option(item.id, item.displayName || item.id)));
   if (modelId && !models.some((item) => item.id === modelId)) {
     select.add(option(modelId, models.length ? `${modelId}（当前配置）` : modelId));
   }
@@ -112,7 +112,6 @@ function render(next: DesktopSnapshot): void {
   find<HTMLElement>('[data-codex-state]').textContent = running ? '已就绪' : state === 'starting' ? '启动中' : '未启动';
   find<HTMLButtonElement>('[data-action="start"]').disabled = busy || running || state === 'starting' || state === 'stopping';
   find<HTMLButtonElement>('[data-action="stop"]').disabled = busy || state === 'stopped' || state === 'stopping' || state === 'error';
-  find<HTMLElement>('[data-folder-display]').textContent = next.settings.workingDirectory || '未设置';
   renderLogs(find('[data-recent-logs]'), next.logs.slice(0, 3));
   renderLogs(find('[data-full-logs]'), next.logs);
 }
@@ -124,7 +123,6 @@ function populateSettings(next: DesktopSnapshot): void {
     ? '已保存 · 输入新密钥以替换' : '输入 App Secret';
   find<HTMLTextAreaElement>('#fc-allowed-users').value = next.settings.allowedOpenIds.join('\n');
   find<HTMLTextAreaElement>('#fc-allowed-chats').value = next.settings.allowedChatIds.join('\n');
-  find<HTMLInputElement>('#fc-folder-input').value = next.settings.workingDirectory;
   find<HTMLInputElement>('#fc-session-timeout').value = String(next.settings.sessionTimeoutHours);
   renderModelSettings(next.settings.model, next.settings.effort);
   find<HTMLInputElement>('#fc-group-mention').checked = next.settings.allowGroupMentions;
@@ -151,7 +149,6 @@ function readSettings(): SettingsInput {
     appSecret: find<HTMLInputElement>('#fc-app-secret').value,
     allowedOpenIds: splitLines(find<HTMLTextAreaElement>('#fc-allowed-users').value),
     allowedChatIds: splitLines(find<HTMLTextAreaElement>('#fc-allowed-chats').value),
-    workingDirectory: find<HTMLInputElement>('#fc-folder-input').value.trim(),
     model,
     effort,
     sessionTimeoutHours: Number(find<HTMLInputElement>('#fc-session-timeout').value),

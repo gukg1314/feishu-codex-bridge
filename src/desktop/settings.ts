@@ -43,7 +43,7 @@ export async function loadSettings(filePath: string): Promise<SavedSettings> {
   }
 }
 
-export async function validateSettings(input: SettingsInput): Promise<BridgeSettings> {
+export async function validateSettings(input: SettingsInput, savedWorkingDirectory: string): Promise<BridgeSettings> {
   if (!input || typeof input !== 'object') throw new Error('设置格式无效');
   if (typeof input.appId !== 'string' || !/^cli_[A-Za-z0-9]+$/.test(input.appId.trim())) {
     throw new Error('请填写有效的飞书 App ID');
@@ -55,15 +55,15 @@ export async function validateSettings(input: SettingsInput): Promise<BridgeSett
   if (!Array.isArray(input.allowedChatIds) || input.allowedChatIds.some((id) => typeof id !== 'string' || !/^oc_[A-Za-z0-9_-]+$/.test(id))) {
     throw new Error('群聊会话 ID 必须每行一个，格式为 oc_...');
   }
-  if (typeof input.workingDirectory !== 'string' || !input.workingDirectory.trim()) {
-    throw new Error('请选择工作目录');
+  if (typeof savedWorkingDirectory !== 'string' || !savedWorkingDirectory.trim()) {
+    throw new Error('已保存的工作目录无效');
   }
   if (typeof input.model !== 'string' || !input.model.trim()) throw new Error('请选择 Codex 模型');
   if (typeof input.effort !== 'string') throw new Error('模型推理强度格式无效');
   if (!Number.isSafeInteger(input.sessionTimeoutHours) || input.sessionTimeoutHours < 1) {
     throw new Error('会话超时必须是至少 1 小时的整数');
   }
-  const workingDirectory = path.resolve(input.workingDirectory.trim());
+  const workingDirectory = path.resolve(savedWorkingDirectory.trim());
   try {
     if (!(await stat(workingDirectory)).isDirectory()) throw new Error('工作目录不是文件夹');
   } catch (error) {

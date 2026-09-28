@@ -93,7 +93,7 @@ test('线程和 turn 请求使用所选模型与权限参数', async () => {
   assert.equal('effort' in requests[3].params, false);
 });
 
-test('旧设置补齐默认模型、强度和超时，目录与新增字段可校验', async (t) => {
+test('旧设置补齐默认值，保存设置时沿用已有工作目录', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'feishu-settings-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const defaults = defaultSettings();
@@ -117,13 +117,13 @@ test('旧设置补齐默认模型、强度和超时，目录与新增字段可�
 
   const validInput = {
     appId: ' cli_new ', appSecret: 'secret', allowedOpenIds: ['ou_owner'], allowedChatIds: ['oc_allowed'],
-    workingDirectory: ` ${directory}/. `, model: ' gpt-6-astra ', effort: ' high ', sessionTimeoutHours: 12,
+    model: ' gpt-6-astra ', effort: ' high ', sessionTimeoutHours: 12,
     allowGroupMentions: false, launchAtLogin: false, autoConnect: false,
   };
-  const validated = await validateSettings(validInput);
+  const validated = await validateSettings({ ...validInput, workingDirectory: tmpdir() }, ` ${directory}/. `);
   assert.equal(validated.workingDirectory, resolve(directory));
   assert.deepEqual([validated.model, validated.effort, validated.sessionTimeoutHours], ['gpt-6-astra', 'high', 12]);
-  await assert.rejects(validateSettings({ ...validInput, sessionTimeoutHours: 1.5 }), /会话超时/);
+  await assert.rejects(validateSettings({ ...validInput, sessionTimeoutHours: 1.5 }, directory), /会话超时/);
 });
 
 test('旧字符串路线迁移为带最后活跃时间的路线记录', async (t) => {

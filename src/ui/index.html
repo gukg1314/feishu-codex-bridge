@@ -151,13 +151,6 @@
     #fc-bridge-demo .fc-section { margin-top: 29px; }
     #fc-bridge-demo .fc-section-head { justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     #fc-bridge-demo .fc-section-head span { font-size: 12px; color: var(--fc-muted); }
-    #fc-bridge-demo .fc-folder {
-      display: flex; align-items: center; gap: 11px; min-width: 0;
-      padding: 13px 15px; border: 1px solid var(--fc-border); border-radius: 8px;
-      background: var(--fc-subtle); font-size: 13px;
-    }
-    #fc-bridge-demo .fc-folder-icon { color: var(--fc-muted); font-size: 17px; line-height: 1; }
-    #fc-bridge-demo .fc-folder-path { overflow-wrap: anywhere; }
     #fc-bridge-demo .fc-logs-preview, #fc-bridge-demo .fc-logs-full { border-top: 1px solid var(--fc-border); }
     #fc-bridge-demo .fc-log-line {
       gap: 13px; min-width: 0; padding: 10px 0;
@@ -231,7 +224,7 @@
         <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
         <span class="fc-title">飞书桥接Codex</span>
       </div>
-      <span class="fc-version">v1.0.3</span>
+      <span class="fc-version">v1.0.4</span>
     </div>
     <div class="fc-layout">
       <aside class="fc-sidebar">
@@ -272,11 +265,6 @@
             </div>
           </div>
 
-          <section class="fc-section" aria-labelledby="fc-folder-heading">
-            <div class="fc-section-head"><h2 id="fc-folder-heading">工作目录</h2></div>
-            <div class="fc-folder"><span class="fc-folder-icon" aria-hidden="true">▱</span><span class="fc-folder-path" data-folder-display>未设置</span></div>
-          </section>
-
           <section class="fc-section" aria-labelledby="fc-recent-heading">
             <div class="fc-section-head"><h2 id="fc-recent-heading">最近日志</h2><span>敏感信息已脱敏</span></div>
             <div class="fc-logs-preview" data-recent-logs></div>
@@ -301,7 +289,6 @@
               <div class="fc-fields">
                 <div class="fc-field fc-span"><label for="fc-allowed-users">允许使用的成员 open_id</label><textarea class="fc-textarea" id="fc-allowed-users" spellcheck="false" placeholder="ou_...&#10;每行一个"></textarea><span class="fc-help">每行一个 open_id；名单外消息不会进入 Codex。</span></div>
                 <div class="fc-field fc-span"><label for="fc-allowed-chats">允许使用的群聊会话 ID</label><textarea class="fc-textarea" id="fc-allowed-chats" spellcheck="false" placeholder="oc_...&#10;每行一个"></textarea><span class="fc-help">只有名单内的群聊才可使用；还需成员在允许名单内并 @ 机器人。</span></div>
-                <div class="fc-field fc-span"><label for="fc-folder-input">工作目录</label><input class="fc-input" id="fc-folder-input" type="text" placeholder="选择工作目录" spellcheck="false"></div>
               </div>
               <label class="fc-switch-row cursor-interaction" for="fc-group-mention"><span class="fc-switch-text"><span class="fc-switch-title">处理群聊 @ 消息</span><span class="fc-switch-desc">仍只接受允许名单成员发起的消息</span></span><input class="fc-switch" id="fc-group-mention" type="checkbox" role="switch"></label>
             </div>

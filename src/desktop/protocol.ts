@@ -14,7 +14,7 @@ export type DesktopSnapshot = {
   logs: LogEntry[];
 };
 
-export type SettingsInput = BridgeSettings & { appSecret: string };
+export type SettingsInput = Omit<BridgeSettings, 'workingDirectory'> & { appSecret: string };
 
 export type DesktopApi = {
   getSnapshot(): Promise<DesktopSnapshot>;

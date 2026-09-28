@@ -100,7 +100,7 @@ async function startBridge(): Promise<void> {
   try {
     await bridge.start();
     status = bridge.getStatus();
-    recordLog('INFO', '桥接已启动');
+    recordLog('INFO', '桥接已启动；已沿用保存的执行目录');
   } catch (error) {
     status = { state: 'error', activeTurns: 0, queuedMessages: 0, lastError: '启动失败' };
     recordLog('ERROR', `桥接启动失败：${error instanceof Error ? error.message : '未知错误'}`);
@@ -143,7 +143,7 @@ function applyLoginItem(settings: BridgeSettings): void {
 }
 
 async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
-  const next = await validateSettings(input);
+  const next = await validateSettings(input, saved.settings.workingDirectory);
   const secretChanged = input.appSecret.length > 0;
   if ((next.appId !== saved.settings.appId || !saved.credentialsConfigured) && !secretChanged) {
     throw new Error('首次设置或更换 App ID 时，请填写 App Secret');
