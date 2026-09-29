@@ -1,8 +1,10 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+const require = createRequire(import.meta.url);
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const releaseRoot = path.join(root, 'release');
 const product = '飞书桥接Codex';
@@ -126,6 +128,11 @@ export async function packageRelease() {
   if (packageInfo.version !== lockInfo.version || lockInfo.packages[''].version !== packageInfo.version) {
     throw new Error('package.json 与 package-lock.json 版本不一致');
   }
+  const { UninstallerReader } = require('app-builder-lib/out/targets/nsis/nsisUtil.js');
+  if (typeof UninstallerReader.verify !== 'function') {
+    throw new Error('NSIS 卸载器 CRC 修复补丁未安装；请先运行 npm ci。');
+  }
+  console.log('[打包] NSIS 卸载器 CRC 修复补丁已加载');
   assertRosettaAvailable();
   const version = nextPatchVersion(packageInfo.version);
   await mkdir(releaseRoot, { recursive: true });

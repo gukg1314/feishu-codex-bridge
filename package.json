@@ -9,15 +9,18 @@
     "start": "npm run build && npm run prepare:binaries && electron .",
     "typecheck": "tsc --noEmit",
     "test": "node --test",
+    "postinstall": "patch-package",
     "prepare:binaries": "node scripts/prepare-binaries.mjs",
     "package:release": "node scripts/package-release.mjs"
   },
   "devDependencies": {
     "@openai/codex": "0.158.0",
     "@types/node": "^24.0.0",
+    "crc": "3.8.0",
     "electron": "44.4.5",
     "electron-builder": "26.7.0",
     "esbuild": "0.25.12",
+    "patch-package": "8.0.1",
     "typescript": "5.9.3"
   },
   "build": {

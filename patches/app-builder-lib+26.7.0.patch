@@ -1,0 +1,205 @@
+diff --git a/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js b/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
+index 1e4ef94..4052427 100644
+--- a/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
++++ b/node_modules/app-builder-lib/out/targets/nsis/NsisTarget.js
+@@ -355,6 +355,9 @@ class NsisTarget extends core_1.Target {
+                 await nsisUtil_1.UninstallerReader.exec(installerPath, uninstallerPath);
+             }
+             catch (error) {
++                if (error.code === "ERR_NSIS_UNINSTALLER_VALIDATION") {
++                    throw error;
++                }
+                 builder_util_1.log.warn(`packager.vm is used: ${error.message}`);
+                 const vm = await packager.vm.value;
+                 await vm.exec(installerPath, []);
+@@ -370,6 +373,8 @@ class NsisTarget extends core_1.Target {
+             await (0, wine_1.execWine)(installerPath, null, [], { env: { __COMPAT_LAYER: "RunAsInvoker" } });
+         }
+         await packager.signIf(uninstallerPath);
++        await nsisUtil_1.UninstallerReader.verify(uninstallerPath);
++        builder_util_1.log.info({ file: uninstallerPath }, "NSIS uninstaller CRC verified before installer build");
+         delete defines.BUILD_UNINSTALLER;
+         // platform-specific path, not wine
+         defines.UNINSTALLER_OUT_FILE = uninstallerPath;
+diff --git a/node_modules/app-builder-lib/out/targets/nsis/nsisUtil.js b/node_modules/app-builder-lib/out/targets/nsis/nsisUtil.js
+index 77117f3..ab19bbd 100644
+--- a/node_modules/app-builder-lib/out/targets/nsis/nsisUtil.js
++++ b/node_modules/app-builder-lib/out/targets/nsis/nsisUtil.js
+@@ -5,6 +5,7 @@ const builder_util_1 = require("builder-util");
+ const fs = require("fs/promises");
+ const path = require("path");
+ const zlib = require("zlib");
++const crc = require("crc");
+ const binDownload_1 = require("../../binDownload");
+ const pathManager_1 = require("../../util/pathManager");
+ exports.nsisTemplatesDir = (0, pathManager_1.getTemplatePath)("nsis");
+@@ -177,56 +178,102 @@ class BinaryReader {
+         return value;
+     }
+ }
++const nsisSignature = [0xef, 0xbe, 0xad, 0xde, 0x4e, 0x75, 0x6c, 0x6c, 0x73, 0x6f, 0x66, 0x74, 0x49, 0x6e, 0x73, 0x74];
++function getNsisOffset(buffer) {
++    const reader = new BinaryReader(buffer);
++    // IMAGE_DOS_HEADER
++    if (!reader.match([0x4d, 0x5a])) {
++        throw new Error("Invalid 'MZ' signature.");
++    }
++    reader.skip(58);
++    // e_lfanew
++    reader.skip(reader.uint32() - reader.position);
++    // IMAGE_FILE_HEADER
++    if (!reader.match([0x50, 0x45, 0x00, 0x00])) {
++        throw new Error("Invalid 'PE' signature.");
++    }
++    reader.skip(2);
++    const numberOfSections = reader.uint16();
++    reader.skip(12);
++    const sizeOfOptionalHeader = reader.uint16();
++    reader.skip(2);
++    reader.skip(sizeOfOptionalHeader);
++    // IMAGE_SECTION_HEADER
++    let nsisOffset = 0;
++    for (let i = 0; i < numberOfSections; i++) {
++        const name = reader.string(8);
++        reader.skip(8);
++        const rawSize = reader.uint32();
++        const rawPointer = reader.uint32();
++        reader.skip(16);
++        switch (name) {
++            case ".text":
++            case ".rdata":
++            case ".data":
++            case ".rsrc": {
++                nsisOffset = Math.max(rawPointer + rawSize, nsisOffset);
++                break;
++            }
++            default: {
++                if (rawPointer !== 0 && rawSize !== 0) {
++                    throw new Error("Unsupported section '" + name + "'.");
++                }
++                break;
++            }
++        }
++    }
++    return nsisOffset;
++}
++function nsisValidationError(message) {
++    const error = new Error(`NSIS uninstaller validation failed: ${message}`);
++    error.code = "ERR_NSIS_UNINSTALLER_VALIDATION";
++    return error;
++}
+ class UninstallerReader {
+-    // noinspection SpellCheckingInspection
+-    static async exec(installerPath, uninstallerPath) {
+-        const buffer = await fs.readFile(installerPath);
+-        const reader = new BinaryReader(buffer);
+-        // IMAGE_DOS_HEADER
+-        if (!reader.match([0x4d, 0x5a])) {
+-            throw new Error("Invalid 'MZ' signature.");
++    static async verify(filePath, strictLength = false) {
++        let buffer;
++        try {
++            buffer = await fs.readFile(filePath);
+         }
+-        reader.skip(58);
+-        // e_lfanew
+-        reader.skip(reader.uint32() - reader.position);
+-        // IMAGE_FILE_HEADER
+-        if (!reader.match([0x50, 0x45, 0x00, 0x00])) {
+-            throw new Error("Invalid 'PE' signature.");
++        catch (error) {
++            throw nsisValidationError(`unable to read file: ${error.message}`);
+         }
+-        reader.skip(2);
+-        const numberOfSections = reader.uint16();
+-        reader.skip(12);
+-        const sizeOfOptionalHeader = reader.uint16();
+-        reader.skip(2);
+-        reader.skip(sizeOfOptionalHeader);
+-        // IMAGE_SECTION_HEADER
+-        let nsisOffset = 0;
+-        for (let i = 0; i < numberOfSections; i++) {
+-            const name = reader.string(8);
+-            reader.skip(8);
+-            const rawSize = reader.uint32();
+-            const rawPointer = reader.uint32();
+-            reader.skip(16);
+-            switch (name) {
+-                case ".text":
+-                case ".rdata":
+-                case ".data":
+-                case ".rsrc": {
+-                    nsisOffset = Math.max(rawPointer + rawSize, nsisOffset);
+-                    break;
+-                }
+-                default: {
+-                    if (rawPointer !== 0 && rawSize !== 0) {
+-                        throw new Error("Unsupported section '" + name + "'.");
+-                    }
+-                    break;
+-                }
+-            }
++        let nsisOffset;
++        try {
++            nsisOffset = getNsisOffset(buffer);
++        }
++        catch (error) {
++            throw nsisValidationError(error.message);
++        }
++        if (nsisOffset < 512 || buffer.length < nsisOffset + 28 ||
++            !new BinaryReader(buffer.subarray(nsisOffset + 4)).match(nsisSignature)) {
++            throw nsisValidationError("invalid NSIS header");
++        }
++        const nsisSize = buffer.readUInt32LE(nsisOffset + 24);
++        const nsisEnd = nsisOffset + nsisSize;
++        if (nsisSize < 28 || nsisEnd > buffer.length || (strictLength && nsisEnd !== buffer.length)) {
++            throw nsisValidationError("NSIS header length mismatch");
++        }
++        if ((buffer.readUInt32LE(nsisOffset) & 4) !== 0) {
++            throw nsisValidationError("CRC disabled");
++        }
++        if (nsisSize < 32) {
++            throw nsisValidationError("missing CRC");
++        }
++        const crcPosition = nsisEnd - 4;
++        const expected = crc.crc32(buffer.subarray(512, crcPosition)) >>> 0;
++        const actual = buffer.readUInt32LE(crcPosition);
++        if (actual !== expected) {
++            throw nsisValidationError(`CRC mismatch (stored=${actual.toString(16)}, computed=${expected.toString(16)})`);
+         }
++    }
++    // noinspection SpellCheckingInspection
++    static async exec(installerPath, uninstallerPath) {
++        const buffer = await fs.readFile(installerPath);
++        const nsisOffset = getNsisOffset(buffer);
+         const executable = buffer.subarray(0, nsisOffset);
+         const nsisSize = buffer.length - nsisOffset;
+         const nsisReader = new BinaryReader(buffer.subarray(nsisOffset, nsisOffset + nsisSize));
+-        const nsisSignature = [0xef, 0xbe, 0xad, 0xde, 0x4e, 0x75, 0x6c, 0x6c, 0x73, 0x6f, 0x66, 0x74, 0x49, 0x6e, 0x73, 0x74];
+         nsisReader.uint32(); // ?
+         if (!nsisReader.match(nsisSignature)) {
+             throw new Error("Invalid signature.");
+@@ -259,8 +306,21 @@ class UninstallerReader {
+         if (!innerBuffer) {
+             throw new Error("Inner block not found.");
+         }
+-        await fs.writeFile(uninstallerPath, executable);
+-        await fs.appendFile(uninstallerPath, innerBuffer);
++        if (innerBuffer.length < 28 || innerBuffer.readUInt32LE(24) !== innerBuffer.length) {
++            throw nsisValidationError("inner NSIS header length mismatch");
++        }
++        const uninstaller = Buffer.concat([executable, innerBuffer]);
++        if ((innerBuffer.readUInt32LE(0) & 4) !== 0) {
++            throw nsisValidationError("CRC disabled");
++        }
++        if (uninstaller.length < 516) {
++            throw nsisValidationError("missing CRC");
++        }
++        const crcPosition = uninstaller.length - 4;
++        uninstaller.writeUInt32LE(crc.crc32(uninstaller.subarray(512, crcPosition)) >>> 0, crcPosition);
++        await fs.writeFile(uninstallerPath, uninstaller);
++        await this.verify(uninstallerPath, true);
++        builder_util_1.log.info({ file: uninstallerPath }, "NSIS uninstaller CRC repaired and verified");
+     }
+ }
+ exports.UninstallerReader = UninstallerReader;
