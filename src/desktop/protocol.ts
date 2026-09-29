@@ -8,6 +8,7 @@ export type LogEntry = {
 };
 
 export type DesktopSnapshot = {
+  version: string;
   settings: BridgeSettings;
   credentialsConfigured: boolean;
   status: BridgeStatus;

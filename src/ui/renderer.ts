@@ -112,6 +112,7 @@ async function loadModels(): Promise<void> {
 
 function render(next: DesktopSnapshot): void {
   snapshot = next;
+  find<HTMLElement>('.fc-version').textContent = `v${next.version}`;
   const state = next.status.state;
   const running = state === 'running';
   root.dataset.running = String(running);

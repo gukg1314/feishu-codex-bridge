@@ -45,7 +45,7 @@ function redact(message: string): string {
 function snapshot(): DesktopSnapshot {
   const current = saved ?? defaultSettings();
   const safeStatus = status.lastError ? { ...status, lastError: redact(status.lastError) } : status;
-  return { settings: current.settings, credentialsConfigured: current.credentialsConfigured, status: safeStatus, logs: [...logs] };
+  return { version: app.getVersion(), settings: current.settings, credentialsConfigured: current.credentialsConfigured, status: safeStatus, logs: [...logs] };
 }
 
 function publish(): void {
