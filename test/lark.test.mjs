@@ -100,7 +100,10 @@ test('卡片沿用引用、状态、按钮和带版本的回调', () => {
   const card = buildLarkCard(snapshot);
   assert.equal(card.schema, '2.0');
   assert.equal(card.body.elements[0].content, '> 处理 Excel');
-  assert.equal(card.body.elements[1].tag, 'collapsible_panel');
+  assert.match(card.body.elements[1].content, /正在执行/);
+  assert.equal(card.body.elements[2].tag, 'collapsible_panel');
+  assert.equal(card.body.elements[2].expanded, false);
+  assert.equal(card.body.elements[2].header.title.content, '执行过程（最近 3 步）');
   const buttons = card.body.elements.find((item) => item.tag === 'column_set');
   const value = buttons.columns[0].elements[0].behaviors[0].value;
   assert.deepEqual(value, { v: 1, action: 'stop_session', sessionId: 'session', cardVersion: 2 });

@@ -39,8 +39,8 @@ function message(messageId, overrides = {}) {
   };
 }
 
-async function waitFor(check) {
-  for (let attempt = 0; attempt < 200; attempt++) {
+async function waitFor(check, timeoutMs = 1_000) {
+  for (let attempt = 0; attempt < Math.ceil(timeoutMs / 5); attempt++) {
     if (check()) return;
     await delay(5);
   }
@@ -241,4 +241,85 @@ test('提问回复、审批和停止卡片回调', async (t) => {
   assert.deepEqual(lark.removedReactions[2], { messageId: 'om_stop', reactionId: 'reaction_3' });
   codex.turns[2].complete({ status: 'interrupted', text: '' });
   await waitFor(() => bridge.getStatus().activeTurns === 0);
+});
+
+test('进度突发会刷新尾部，终态会取消延迟中的旧进度', async (t) => {
+  const { lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_progress_burst'));
+  await waitFor(() => codex.turns.length === 1);
+  const turn = codex.turns[0];
+  const card = lark.cards[0];
+
+  turn.events.onProgress({ kind: 'summary', key: 'reasoning:item:0', text: '初始摘要' });
+  await waitFor(() => card.snapshot.summary === '初始摘要');
+  turn.events.onProgress({ kind: 'plan', key: 'plan:0', text: '准备环境', status: 'completed' });
+  turn.events.onProgress({ kind: 'plan', key: 'plan:1', text: '读取配置', status: 'completed' });
+  turn.events.onProgress({ kind: 'plan', key: 'plan:2', text: '核对字段', status: 'completed' });
+  turn.events.onProgress({ kind: 'plan', key: 'plan:3', text: '写入配置', status: 'inProgress' });
+  turn.events.onProgress({ kind: 'summary', key: 'reasoning:item:0', text: '最新公开摘要' });
+
+  await waitFor(() => card.snapshot.summary === '最新公开摘要' && card.snapshot.currentStep === '写入配置', 2_800);
+  assert.deepEqual(card.snapshot.steps.map((step) => step.title), ['读取配置', '核对字段', '写入配置']);
+
+  turn.events.onProgress({ kind: 'summary', key: 'reasoning:item:0', text: '终态之后的旧进度' });
+  turn.complete({ status: 'completed', text: '最终结果' });
+  await waitFor(() => card.snapshot.status === 'completed');
+  const terminalVersion = card.snapshot.version;
+  await delay(2_700);
+  assert.equal(card.snapshot.status, 'completed');
+  assert.equal(card.snapshot.summary, '最终结果');
+  assert.equal(card.snapshot.version, terminalVersion);
+});
+
+test('旧版本停止仍有效，旧版本提问与审批按钮会被拒绝', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+
+  await lark.emitMessage(message('om_old_stop'));
+  await waitFor(() => codex.turns.length === 1);
+  const stopCard = lark.cards[0];
+  codex.turns[0].events.onProgress({ kind: 'plan', key: 'plan:0', text: '检查输入', status: 'inProgress' });
+  await waitFor(() => stopCard.snapshot.version > 1);
+  await lark.emitAction({ cardMessageId: stopCard.id, actorOpenId: 'ou_other', action: 'stop', version: 1 });
+  assert.equal(codex.interrupted.length, 0);
+  await lark.emitAction({ cardMessageId: stopCard.id, actorOpenId: 'ou_owner', action: 'stop', version: 1 });
+  await waitFor(() => stopCard.snapshot.status === 'stopped');
+  assert.deepEqual(codex.interrupted, [{ threadId: 'thread_1', turnId: 'turn_1' }]);
+  codex.turns[0].complete({ status: 'interrupted', text: '' });
+  await waitFor(() => bridge.getStatus().activeTurns === 0);
+
+  await lark.emitMessage(message('om_old_question'));
+  await waitFor(() => codex.turns.length === 2);
+  codex.turns[1].events.onQuestion({ id: 21, text: '继续吗？', options: ['继续'] });
+  await waitFor(() => lark.cards[1].snapshot.status === 'question');
+  const questionCard = lark.cards[1];
+  await lark.emitAction({
+    cardMessageId: questionCard.id, actorOpenId: 'ou_owner', action: 'answer', value: '继续',
+    version: questionCard.snapshot.version - 1,
+  });
+  assert.equal(codex.questions.length, 0);
+  await lark.emitAction({
+    cardMessageId: questionCard.id, actorOpenId: 'ou_owner', action: 'answer', value: '继续',
+    version: questionCard.snapshot.version,
+  });
+  assert.deepEqual(codex.questions, [{ id: 21, answer: '继续' }]);
+  codex.turns[1].complete({ status: 'completed', text: '已继续' });
+  await waitFor(() => questionCard.snapshot.status === 'completed');
+
+  await lark.emitMessage(message('om_old_approval'));
+  await waitFor(() => codex.turns.length === 3);
+  codex.turns[2].events.onApproval({ id: 22, title: '允许操作？' });
+  await waitFor(() => lark.cards[2].snapshot.status === 'approval');
+  const approvalCard = lark.cards[2];
+  await lark.emitAction({
+    cardMessageId: approvalCard.id, actorOpenId: 'ou_owner', action: 'approve',
+    version: approvalCard.snapshot.version - 1,
+  });
+  assert.equal(codex.approvals.length, 0);
+  await lark.emitAction({
+    cardMessageId: approvalCard.id, actorOpenId: 'ou_owner', action: 'approve',
+    version: approvalCard.snapshot.version,
+  });
+  assert.deepEqual(codex.approvals, [{ id: 22, approved: true }]);
+  codex.turns[2].complete({ status: 'completed', text: '已批准' });
+  await waitFor(() => approvalCard.snapshot.status === 'completed');
 });

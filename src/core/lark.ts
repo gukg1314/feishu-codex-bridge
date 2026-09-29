@@ -349,8 +349,10 @@ export class LarkCliTransport implements LarkTransport {
     const event = normalizeLarkCardAction(value);
     if (!event || this.seenActionIds.has(event.eventId)) return;
     const card = this.cards.get(event.cardMessageId);
+    const runningStop = event.action === "stop" && card?.snapshot.status === "running"
+      && event.version <= card.snapshot.version;
     if (!card || card.chatId !== event.chatId || card.ownerOpenId !== event.actorOpenId
-      || card.sessionId !== event.sessionId || card.snapshot.version !== event.version) {
+      || card.sessionId !== event.sessionId || (!runningStop && card.snapshot.version !== event.version)) {
       this.log("warn", "飞书卡片回调已拒绝：操作者、会话或版本不匹配");
       return;
     }
@@ -370,7 +372,7 @@ export class LarkCliTransport implements LarkTransport {
         ...(event.value ? { value: event.value } : {}),
         version: event.version,
       });
-      this.log("info", "飞书卡片回调已处理");
+      this.log("info", `飞书卡片回调已处理（${event.action}，卡片版本 ${event.version}）`);
     } catch {
       this.usedCardVersions.delete(actionVersion);
       this.log("error", "飞书卡片回调处理失败");

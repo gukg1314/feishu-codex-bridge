@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface, type Interface } from 'node:readline';
+import packageJson from '../../package.json';
 import type { BridgeLog, IncomingAttachment } from './types.js';
 
 type RequestId = number | string;
@@ -18,10 +19,18 @@ export interface CodexApproval {
 }
 
 export interface CodexTurnEvents {
-  onProgress: (text: string) => void;
+  onProgress: (progress: CodexProgress) => void;
   onQuestion: (request: CodexQuestion) => void;
   onApproval: (request: CodexApproval) => void;
   onPromptResolved?: (id: RequestId) => void;
+}
+
+export interface CodexProgress {
+  kind: 'summary' | 'message' | 'plan' | 'operation';
+  key: string;
+  text: string;
+  detail?: string;
+  status?: 'pending' | 'inProgress' | 'completed' | 'failed';
 }
 
 export interface CodexTurnResult {
@@ -73,6 +82,9 @@ interface RunningTurn {
   turnId?: string;
   events: CodexTurnEvents;
   messages: Map<string, { text: string; phase?: string }>;
+  summaries: Map<string, Map<number, string>>;
+  progress: Map<string, string>;
+  pendingNotifications: { method: string; params: JsonObject }[];
   resolve: (result: CodexTurnResult) => void;
   completed: Promise<CodexTurnResult>;
 }
@@ -85,7 +97,7 @@ export class CodexClient implements CodexPort {
   private serverRequests = new Map<RequestId, PendingServerRequest>();
   private turns = new Map<string, RunningTurn>();
 
-  constructor(private readonly options: { binaryPath: string; log: BridgeLog }) {}
+  constructor(private readonly options: { binaryPath: string; log: BridgeLog; version?: string }) {}
 
   async start(): Promise<void> {
     if (this.process) return;
@@ -106,7 +118,7 @@ export class CodexClient implements CodexPort {
 
     try {
       await this.request('initialize', {
-        clientInfo: { name: 'feishu_codex_bridge', title: '飞书桥接Codex', version: '1.0.6' },
+        clientInfo: { name: 'feishu_codex_bridge', title: '飞书桥接Codex', version: this.options.version ?? packageJson.version },
         capabilities: { experimentalApi: true, requestAttestation: false },
       });
       this.send({ method: 'initialized', params: {} });
@@ -196,17 +208,25 @@ export class CodexClient implements CodexPort {
     }
     let resolve!: (result: CodexTurnResult) => void;
     const completed = new Promise<CodexTurnResult>((done) => { resolve = done; });
-    const running: RunningTurn = { threadId, events, messages: new Map(), resolve, completed };
+    const running: RunningTurn = {
+      threadId, events, messages: new Map(), summaries: new Map(), progress: new Map(),
+      pendingNotifications: [], resolve, completed,
+    };
     this.turns.set(threadId, running);
     try {
       const response = await this.request('turn/start', {
         threadId, cwd, input, model, ...(effort ? { effort } : {}),
         approvalPolicy: 'never',
         sandboxPolicy: { type: 'dangerFullAccess' },
+        summary: 'auto',
       });
       const turnId = (response.turn as JsonObject | undefined)?.id;
       if (typeof turnId !== 'string') throw new Error('Codex did not return a turn ID');
       running.turnId = turnId;
+      for (const notification of running.pendingNotifications) {
+        this.receiveNotification(notification.method, notification.params);
+      }
+      running.pendingNotifications.length = 0;
       this.options.log('INFO', `Codex turn started (model=${model}, effort=${effort || 'default'}, approval=never, sandbox=danger-full-access)`);
       return { turnId, completed };
     } catch (error) {
@@ -300,7 +320,7 @@ export class CodexClient implements CodexPort {
 
   private receiveServerRequest(id: RequestId, method: string, params: JsonObject): void {
     const running = this.turns.get(String(params.threadId ?? params.conversationId ?? ''));
-    if (!running) {
+    if (!running || (running.turnId && params.turnId && params.turnId !== running.turnId)) {
       this.send({ id, error: { code: -32602, message: 'No active Feishu turn' } });
       return;
     }
@@ -334,25 +354,68 @@ export class CodexClient implements CodexPort {
   private receiveNotification(method: string, params: JsonObject): void {
     if (method === 'serverRequest/resolved') {
       const id = params.requestId as RequestId;
-      this.serverRequests.delete(id);
-      this.turns.get(String(params.threadId ?? ''))?.events.onPromptResolved?.(id);
+      const running = this.turns.get(String(params.threadId ?? ''));
+      if (running && (!params.turnId || params.turnId === running.turnId)) {
+        this.serverRequests.delete(id);
+        running.events.onPromptResolved?.(id);
+      }
       return;
     }
     const running = this.turns.get(String(params.threadId ?? ''));
     if (!running) return;
     const incomingTurnId = typeof params.turnId === 'string' ? params.turnId : (params.turn as JsonObject | undefined)?.id;
-    if (running.turnId && incomingTurnId && incomingTurnId !== running.turnId) return;
+    if (!running.turnId) {
+      running.pendingNotifications.push({ method, params });
+      return;
+    }
+    if (incomingTurnId !== running.turnId) return;
     if (method === 'item/agentMessage/delta') {
       const itemId = String(params.itemId ?? '');
       const item = running.messages.get(itemId) ?? { text: '' };
       item.text += String(params.delta ?? '');
       running.messages.set(itemId, item);
-      running.events.onProgress(item.text);
+      this.emitProgress(running, { kind: 'message', key: `message:${itemId}`, text: item.text });
+    } else if (method === 'item/reasoning/summaryPartAdded') {
+      const itemId = String(params.itemId ?? '');
+      const index = params.summaryIndex;
+      if (itemId && Number.isSafeInteger(index) && !running.summaries.get(itemId)?.has(index as number)) {
+        const parts = running.summaries.get(itemId) ?? new Map<number, string>();
+        parts.set(index as number, '');
+        running.summaries.set(itemId, parts);
+      }
+    } else if (method === 'item/reasoning/summaryTextDelta') {
+      const itemId = String(params.itemId ?? '');
+      const index = params.summaryIndex;
+      if (!itemId || !Number.isSafeInteger(index) || typeof params.delta !== 'string') return;
+      const parts = running.summaries.get(itemId) ?? new Map<number, string>();
+      const text = (parts.get(index as number) ?? '') + params.delta;
+      parts.set(index as number, text);
+      running.summaries.set(itemId, parts);
+      this.emitProgress(running, { kind: 'summary', key: `reasoning:${itemId}:${index}`, text });
+    } else if (method === 'turn/plan/updated') {
+      const plan = Array.isArray(params.plan) ? params.plan as JsonObject[] : [];
+      plan.forEach((step, index) => {
+        if (typeof step.step !== 'string') return;
+        const status = step.status === 'pending' || step.status === 'inProgress' || step.status === 'completed' ? step.status : undefined;
+        this.emitProgress(running, { kind: 'plan', key: `plan:${index}`, text: step.step, status });
+      });
+    } else if (method === 'item/started') {
+      this.emitOperation(running, params.item as JsonObject | undefined, 'inProgress');
     } else if (method === 'item/completed') {
       const item = params.item as JsonObject | undefined;
       if (item?.type === 'agentMessage' && typeof item.id === 'string') {
         running.messages.set(item.id, { text: String(item.text ?? ''), phase: typeof item.phase === 'string' ? item.phase : undefined });
-        running.events.onProgress(String(item.text ?? ''));
+        this.emitProgress(running, { kind: 'message', key: `message:${item.id}`, text: String(item.text ?? '') });
+      } else if (item?.type === 'reasoning' && typeof item.id === 'string' && Array.isArray(item.summary)) {
+        const parts = running.summaries.get(item.id) ?? new Map<number, string>();
+        (item.summary as unknown[]).forEach((value, index) => {
+          if (typeof value !== 'string') return;
+          parts.set(index, value);
+          this.emitProgress(running, { kind: 'summary', key: `reasoning:${item.id}:${index}`, text: value });
+        });
+        running.summaries.set(item.id, parts);
+      } else {
+        this.emitOperation(running, item, 'completed');
       }
     } else if (method === 'turn/completed') {
       const turn = params.turn as JsonObject | undefined;
@@ -367,6 +430,37 @@ export class CodexClient implements CodexPort {
       this.turns.delete(running.threadId);
       running.resolve({ status, text, error: typeof error === 'string' ? error : undefined });
     }
+  }
+
+  private emitProgress(running: RunningTurn, progress: CodexProgress): void {
+    if (!progress.text.trim()) return;
+    const signature = `${progress.text}\u0000${progress.detail ?? ''}\u0000${progress.status ?? ''}`;
+    if (running.progress.get(progress.key) === signature) return;
+    running.progress.set(progress.key, signature);
+    running.events.onProgress(progress);
+  }
+
+  private emitOperation(running: RunningTurn, item: JsonObject | undefined, phase: 'inProgress' | 'completed'): void {
+    if (!item || typeof item.id !== 'string') return;
+    const failed = item.status === 'failed' || item.status === 'declined';
+    const status = failed ? 'failed' : phase;
+    let text: string;
+    let detail: string | undefined;
+    if (item.type === 'commandExecution') {
+      text = phase === 'inProgress' ? '正在运行命令' : failed ? '命令执行失败' : '命令执行完成';
+      detail = typeof item.exitCode === 'number' ? `退出码 ${item.exitCode}` : undefined;
+    } else if (item.type === 'fileChange') {
+      const changes = Array.isArray(item.changes) ? item.changes as JsonObject[] : [];
+      text = phase === 'inProgress' ? '正在修改文件' : failed ? '文件修改失败' : '文件修改完成';
+      detail = changes.map((change) => typeof change.path === 'string' ? change.path.split(/[\\/]/).pop() : undefined)
+        .filter(Boolean).slice(0, 3).join('、') || undefined;
+    } else if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') {
+      const tool = typeof item.tool === 'string' ? item.tool : typeof item.name === 'string' ? item.name : '工具';
+      text = phase === 'inProgress' ? `正在调用 ${tool}` : failed ? `${tool} 调用失败` : `${tool} 调用完成`;
+    } else {
+      return;
+    }
+    this.emitProgress(running, { kind: 'operation', key: `operation:${item.id}`, text, detail, status });
   }
 
   private disconnected(error: Error): void {

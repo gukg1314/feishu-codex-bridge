@@ -1,13 +1,13 @@
 # 飞书桥接Codex
 
-macOS Apple 芯片桌面程序。飞书消息经允许名单筛选后交给本机 Codex App Server，结果回到原飞书会话的运行卡片。
+macOS Apple 芯片与 Windows 10+ x64 桌面程序。飞书消息经允许名单筛选后交给本机 Codex App Server，结果回到原飞书会话的运行卡片。
 
 ## 使用
 
-1. 安装 DMG 并打开应用。在“设置”填写飞书 App ID、App Secret、允许使用的成员 `open_id`，并选择 Codex 模型、推理强度和会话空闲超时。默认使用 `gpt-6-sol`、`max` 和 24 小时。
+1. Mac 安装 DMG；Windows 直接运行 EXE。在“设置”填写飞书 App ID、App Secret、允许使用的成员 `open_id`，并选择 Codex 模型、推理强度和会话空闲超时。默认使用 `gpt-6-sol`、`max` 和 24 小时。
 2. 如需群聊，开启“处理群聊 @ 消息”，并逐行填写允许使用的群聊会话 ID（`oc_...`）。名单外的群聊始终不能使用。
 3. 保存设置后，在“总览”手动启动桥接。两个自启动开关分别控制登录电脑时打开客户端、客户端启动后自动连接；默认都关闭。
-4. 关闭窗口时程序仍在菜单栏运行。通过菜单栏图标可显示窗口、启停桥接或退出。
+4. Mac 关闭窗口后仍可通过菜单栏图标操作。Windows 点击窗口关闭按钮时，可选择“最小化到托盘”继续后台运行，或选择“关闭工具”退出；托盘图标可恢复窗口。
 
 App Secret 通过 stdin 交给固定名称 `bridge` 的飞书 CLI profile，不写入本程序的设置文件或日志。Codex 子进程沿用当前用户的 Codex 登录态与技能配置；客户端只管理自己启动的子进程。
 
@@ -15,13 +15,16 @@ App Secret 通过 stdin 交给固定名称 `bridge` 的飞书 CLI profile，不�
 
 ## 构建
 
-需要 macOS Apple 芯片、Node.js、npm、`curl` 和 `tar`。
+在 macOS 上出包，需要 Node.js、npm、`curl` 和 `tar`。Apple 芯片还需安装原生 NSIS 编译器，用于生成 Windows EXE。先安装依赖，再双击项目根目录的 `一键打包.command`；命令行也可运行：
 
 ```sh
+brew install makensis
 npm ci
-npm run package:mac
+npm run package:release
 ```
 
-输出在 `release/`。包内固定 Codex CLI 0.158.0 与官方 lark-cli 1.0.72，并附许可证。DMG 使用临时签名，未使用开发者签名或公证；首次打开时可能需要在系统设置中允许。
+每次成功出包只增加一次补丁版本，例如 `1.0.6` 生成 `1.0.7`。两个成品分别为 `release/<版本>/飞书桥接Codex-<版本>-mac-arm64.dmg` 和 `release/<版本>/飞书桥接Codex-<版本>-win-x64.exe`；失败时版本不变。包内固定 Codex CLI 0.158.0 与官方 lark-cli 1.0.72，并附许可证。DMG 未使用开发者签名或公证；Windows EXE 未签名。
+
+Windows 验收：运行 EXE，启动桥接；点击关闭按钮并选择最小化，确认托盘可恢复且桥接仍运行；再次关闭并选择关闭工具，确认托盘图标和后台进程退出。
 
 `npm run build` 只编译代码，不启动桥接或连接飞书。`npm run start` 用于本机开发，默认不自动连接。

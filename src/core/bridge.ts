@@ -1,11 +1,18 @@
 import { stat } from 'node:fs/promises';
 import { extname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CodexApproval, CodexPort, CodexQuestion, CodexTurnResult } from './codex.js';
+import type { CodexApproval, CodexPort, CodexProgress, CodexQuestion, CodexTurnResult } from './codex.js';
 import { RouteStore } from './routes.js';
 import type { BridgeLog, BridgeSettings, BridgeStatus, CardAction, CardSnapshot, IncomingMessage, LarkTransport } from './types.js';
 
 type Prompt = { kind: 'question'; value: CodexQuestion } | { kind: 'approval'; value: CodexApproval };
+type ProgressStep = { title: string; detail?: string };
+
+const PROGRESS_INTERVAL_MS = 2_500;
+
+function brief(value: string, limit = 220): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, limit);
+}
 
 interface ActiveMessage {
   route: string;
@@ -16,8 +23,15 @@ interface ActiveMessage {
   turnId?: string;
   threadId?: string;
   stopRequested: boolean;
+  terminal: boolean;
   prompts: Prompt[];
   lastProgressAt: number;
+  lastProgressFingerprint?: string;
+  progressTimer?: ReturnType<typeof setTimeout>;
+  progressSteps: Map<string, ProgressStep>;
+  currentStep?: string;
+  currentStepKey?: string;
+  latestPublic?: string;
   reaction?: Promise<string | undefined>;
   reactionRemoval?: Promise<void>;
 }
@@ -88,6 +102,7 @@ export class Bridge {
     this.report();
     for (const active of this.active.values()) {
       active.stopRequested = true;
+      this.markTerminal(active);
       if (active.threadId && active.turnId) {
         await this.options.codex.interrupt(active.threadId, active.turnId).catch(() => undefined);
       }
@@ -159,6 +174,7 @@ export class Bridge {
           this.options.log('ERROR', 'Message processing failed');
           const active = this.active.get(route);
           if (active && active.message.messageId === message.messageId) {
+            this.markTerminal(active);
             await this.updateCard(active, { status: 'failed', summary: (error as Error).message, question: undefined, approval: undefined });
           }
         } finally {
@@ -198,7 +214,7 @@ export class Bridge {
     await this.store.markSeen(message.messageId);
     const active: ActiveMessage = {
       route, message, cardMessageId, snapshot, updates: Promise.resolve(), stopRequested: false,
-      prompts: [], lastProgressAt: 0,
+      terminal: false, prompts: [], lastProgressAt: 0, progressSteps: new Map(),
     };
     this.active.set(route, active);
     this.cards.set(cardMessageId, active);
@@ -262,12 +278,89 @@ export class Bridge {
     return active.reactionRemoval;
   }
 
-  private onProgress(active: ActiveMessage, text: string): void {
-    if (active.stopRequested || active.prompts.length || !this.cards.has(active.cardMessageId)) return;
-    const now = Date.now();
-    if (now - active.lastProgressAt < 1200) return;
-    active.lastProgressAt = now;
-    void this.updateCard(active, { status: 'running', summary: '正在执行…', details: text ? [text.slice(-1500)] : [] });
+  private onProgress(active: ActiveMessage, progress: CodexProgress): void {
+    if (active.stopRequested || active.terminal || !this.cards.has(active.cardMessageId)) return;
+    const text = brief(progress.text);
+    if (!text) return;
+    if (progress.kind === 'summary' || progress.kind === 'message') {
+      active.latestPublic = text;
+      const key = active.currentStepKey && active.progressSteps.has(active.currentStepKey)
+        ? active.currentStepKey : [...active.progressSteps.keys()].at(-1);
+      if (key) active.progressSteps.set(key, { ...active.progressSteps.get(key)!, detail: text });
+      else {
+        active.currentStep = '整理进度';
+        active.currentStepKey = progress.key;
+        active.progressSteps.set(progress.key, { title: '公开进度摘要', detail: text });
+      }
+    } else if (progress.kind === 'plan') {
+      if (progress.status === 'pending' && active.currentStep) return;
+      if (progress.status === 'inProgress') {
+        active.currentStep = text;
+        active.currentStepKey = progress.key;
+        if (!active.latestPublic) active.latestPublic = `计划：${text}`;
+      } else if (progress.status === 'completed' && active.currentStepKey === progress.key) {
+        active.currentStepKey = undefined;
+      }
+      active.progressSteps.delete(progress.key);
+      active.progressSteps.set(progress.key, {
+        title: text,
+        detail: progress.status === 'completed' ? '已完成' : progress.status === 'inProgress' ? '执行中' : '待开始',
+      });
+    } else {
+      if (!active.currentStepKey) {
+        active.currentStep = text;
+        active.currentStepKey = progress.status === 'inProgress' ? progress.key : undefined;
+      } else if (progress.status !== 'inProgress' && active.currentStepKey === progress.key) {
+        active.currentStepKey = undefined;
+      }
+      active.latestPublic = progress.detail ? `${text} · ${brief(progress.detail, 100)}` : text;
+      active.progressSteps.delete(progress.key);
+      active.progressSteps.set(progress.key, {
+        title: text,
+        detail: progress.detail ? brief(progress.detail, 160) : progress.status === 'failed' ? '失败' : progress.status === 'completed' ? '已完成' : '执行中',
+      });
+    }
+    while (active.progressSteps.size > 3) active.progressSteps.delete(active.progressSteps.keys().next().value!);
+    if (!active.prompts.length) this.scheduleProgress(active);
+  }
+
+  private scheduleProgress(active: ActiveMessage): void {
+    if (active.progressTimer || active.terminal) return;
+    const wait = Math.max(100, PROGRESS_INTERVAL_MS - (Date.now() - active.lastProgressAt));
+    active.progressTimer = setTimeout(() => {
+      active.progressTimer = undefined;
+      this.flushProgress(active);
+    }, wait);
+  }
+
+  private progressPatch(active: ActiveMessage): Partial<CardSnapshot> {
+    return {
+      status: 'running',
+      currentStep: active.currentStep,
+      summary: active.latestPublic || '正在执行…',
+      steps: [...active.progressSteps.values()],
+    };
+  }
+
+  private flushProgress(active: ActiveMessage): void {
+    if (active.stopRequested || active.terminal || active.prompts.length || !this.cards.has(active.cardMessageId)) return;
+    const patch = this.progressPatch(active);
+    const fingerprint = JSON.stringify(patch);
+    if (fingerprint === active.lastProgressFingerprint) return;
+    active.lastProgressFingerprint = fingerprint;
+    active.lastProgressAt = Date.now();
+    void this.updateCard(active, patch);
+    this.options.log('INFO', 'Running card progress queued');
+  }
+
+  private clearProgressTimer(active: ActiveMessage): void {
+    if (active.progressTimer) clearTimeout(active.progressTimer);
+    active.progressTimer = undefined;
+  }
+
+  private markTerminal(active: ActiveMessage): void {
+    active.terminal = true;
+    this.clearProgressTimer(active);
   }
 
   private enqueuePrompt(active: ActiveMessage, prompt: Prompt): void {
@@ -283,25 +376,33 @@ export class Bridge {
   }
 
   private async showPrompt(active: ActiveMessage): Promise<void> {
-    if (active.stopRequested || !this.cards.has(active.cardMessageId)) return;
+    if (active.stopRequested || active.terminal || !this.cards.has(active.cardMessageId)) return;
+    this.clearProgressTimer(active);
     const prompt = active.prompts[0];
     if (!prompt) {
-      await this.updateCard(active, { status: 'running', summary: '正在执行…', question: undefined, approval: undefined });
+      await this.updateCard(active, { ...this.progressPatch(active), question: undefined, approval: undefined });
     } else if (prompt.kind === 'question') {
       await this.updateCard(active, { status: 'question', summary: '等待回答', question: { text: prompt.value.text, options: prompt.value.options }, approval: undefined });
+      this.options.log('INFO', 'Running card switched to question');
     } else {
       await this.updateCard(active, { status: 'approval', summary: '等待审批', approval: { title: prompt.value.title, detail: prompt.value.detail }, question: undefined });
+      this.options.log('INFO', 'Running card switched to approval');
     }
   }
 
   private async onAction(action: CardAction): Promise<void> {
     const active = this.cards.get(action.cardMessageId);
-    if (!active || active.stopRequested || active.message.senderOpenId !== action.actorOpenId || active.snapshot.version !== action.version) {
+    const oldRunningStop = action.action === 'stop' && active?.snapshot.status === 'running'
+      && typeof action.version === 'number' && action.version >= 1 && action.version <= active.snapshot.version;
+    if (!active || active.stopRequested || active.terminal || active.message.senderOpenId !== action.actorOpenId
+      || (!oldRunningStop && active.snapshot.version !== action.version)) {
       this.options.log('WARN', 'Card action rejected: owner or version mismatch');
       return;
     }
+    if (action.action === 'stop' && active.snapshot.status !== 'running') return;
     if (action.action === 'stop' || (action.action === 'deny' && active.prompts[0]?.kind === 'question')) {
       active.stopRequested = true;
+      this.markTerminal(active);
       this.options.log('INFO', 'Turn stop requested from card');
       await this.updateCard(active, { status: 'stopped', summary: '已停止', question: undefined, approval: undefined });
       void this.clearReaction(active);
@@ -324,13 +425,14 @@ export class Bridge {
 
   private async finish(active: ActiveMessage, result: CodexTurnResult): Promise<void> {
     active.prompts.length = 0;
+    this.markTerminal(active);
     if (active.stopRequested || result.status === 'interrupted') {
       await this.updateCard(active, { status: 'stopped', summary: '已停止', question: undefined, approval: undefined });
     } else if (result.status === 'failed') {
       await this.updateCard(active, { status: 'failed', summary: result.error || '执行失败', question: undefined, approval: undefined });
       this.options.log('ERROR', 'Codex turn failed');
     } else {
-      await this.updateCard(active, { status: 'completed', summary: result.text || '已完成', details: [], question: undefined, approval: undefined });
+      await this.updateCard(active, { status: 'completed', summary: result.text || '已完成', steps: [], details: [], question: undefined, approval: undefined });
       await this.sendOutputFiles(active.message.chatId, result.text);
       this.options.log('INFO', 'Codex turn completed');
     }
@@ -339,9 +441,12 @@ export class Bridge {
   private updateCard(active: ActiveMessage, patch: Partial<CardSnapshot>): Promise<void> {
     active.updates = active.updates.then(async () => {
       if (this.cards.get(active.cardMessageId) !== active) return;
+      if (active.terminal && (patch.status === 'running' || patch.status === 'question' || patch.status === 'approval')) return;
       const next = { ...active.snapshot, ...patch, version: active.snapshot.version + 1 };
+      if (JSON.stringify({ ...next, version: 0 }) === JSON.stringify({ ...active.snapshot, version: 0 })) return;
       await this.options.lark.updateCard(active.cardMessageId, next);
       active.snapshot = next;
+      this.options.log('INFO', `Card updated (${next.status}, version=${next.version})`);
     }).catch(() => {
       this.options.log('ERROR', 'Card update failed');
     });

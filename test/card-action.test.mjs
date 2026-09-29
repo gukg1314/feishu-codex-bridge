@@ -84,3 +84,57 @@ process.stdout.write('{}');
   const button = calls[1].payload.card.body.elements.find((item) => item.tag === 'column_set');
   assert.equal(button.columns[0].elements[0].behaviors[0].value.cardVersion, 2);
 });
+
+test('运行卡片允许旧版本停止回调，提问和审批仍要求最新版本', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-card-version-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cliPath = join(directory, 'fake-lark-cli.cjs');
+  await writeFile(cliPath, `#!/usr/bin/env node\nprocess.stdout.write('{}');\n`, { mode: 0o755 });
+
+  const transport = new LarkCliTransport({
+    cliPath, profile: 'offline-test', workDir: directory,
+    settings: {
+      appId: 'cli_test', allowedOpenIds: ['ou_owner'], allowedChatIds: ['oc_allowed'],
+      workingDirectory: directory, allowGroupMentions: true,
+      launchAtLogin: false, autoConnect: false,
+    },
+    log: () => {},
+  });
+  const received = [];
+  transport.handlers = { onMessage: () => {}, onAction: (action) => received.push(action) };
+  const snapshot = (sessionId, status, version) => ({
+    sessionId, ownerOpenId: 'ou_owner', prompt: '处理任务', status, version,
+  });
+  const callback = (eventId, messageId, sessionId, action, version, answer) => ({
+    type: 'card.action.trigger', action_tag: 'button', event_id: eventId,
+    message_id: messageId, chat_id: 'oc_allowed', operator_id: 'ou_owner', token: `token-${eventId}`,
+    action_value: JSON.stringify({ v: 1, action, sessionId, cardVersion: version, ...(answer ? { answer } : {}) }),
+  });
+
+  transport.cards.set('running-card', {
+    chatId: 'oc_allowed', ownerOpenId: 'ou_owner', sessionId: 'session-running',
+    snapshot: snapshot('session-running', 'running', 4),
+  });
+  transport.cards.set('question-card', {
+    chatId: 'oc_allowed', ownerOpenId: 'ou_owner', sessionId: 'session-question',
+    snapshot: snapshot('session-question', 'question', 4),
+  });
+  transport.cards.set('approval-card', {
+    chatId: 'oc_allowed', ownerOpenId: 'ou_owner', sessionId: 'session-approval',
+    snapshot: snapshot('session-approval', 'approval', 4),
+  });
+  transport.cards.set('completed-card', {
+    chatId: 'oc_allowed', ownerOpenId: 'ou_owner', sessionId: 'session-completed',
+    snapshot: snapshot('session-completed', 'completed', 4),
+  });
+
+  await transport.handleAction(callback('event-stop-wrong-session', 'running-card', 'session-other', 'stop_session', 2));
+  await transport.handleAction(callback('event-stop-completed', 'completed-card', 'session-completed', 'stop_session', 2));
+  await transport.handleAction(callback('event-stop-old', 'running-card', 'session-running', 'stop_session', 2));
+  await transport.handleAction(callback('event-question-old', 'question-card', 'session-question', 'question_answer', 2, '继续'));
+  await transport.handleAction(callback('event-approval-old', 'approval-card', 'session-approval', 'permission_allow', 2));
+
+  assert.deepEqual(received, [{
+    cardMessageId: 'running-card', actorOpenId: 'ou_owner', action: 'stop', version: 2,
+  }]);
+});

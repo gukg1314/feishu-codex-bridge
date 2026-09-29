@@ -53,6 +53,8 @@ export interface CardSnapshot {
   prompt: string;
   status: 'running' | 'completed' | 'stopped' | 'failed' | 'question' | 'approval';
   summary?: string;
+  currentStep?: string;
+  steps?: { title: string; detail?: string }[];
   details?: string[];
   version: number;
   question?: { text: string; options?: string[] };

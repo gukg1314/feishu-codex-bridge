@@ -1,6 +1,6 @@
 {
   "name": "feishu-codex-bridge",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "private": true,
   "description": "Feishu to Codex desktop bridge",
   "main": "dist/desktop/main.cjs",
@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test",
     "prepare:binaries": "node scripts/prepare-binaries.mjs",
-    "package:mac": "npm run build && npm run prepare:binaries && electron-builder --mac dmg --arm64"
+    "package:release": "node scripts/package-release.mjs"
   },
   "devDependencies": {
     "@openai/codex": "0.158.0",
@@ -38,12 +38,18 @@
     "mac": {
       "category": "public.app-category.productivity",
       "target": [{ "target": "dmg", "arch": ["arm64"] }],
+      "artifactName": "飞书桥接Codex-${version}-mac-arm64.${ext}",
       "identity": "-",
       "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "notarize": false,
       "icon": "icon/macdock.png"
     },
-    "dmg": { "title": "飞书桥接Codex ${version}" }
+    "dmg": { "title": "飞书桥接Codex ${version}" },
+    "win": {
+      "target": [{ "target": "portable", "arch": ["x64"] }],
+      "artifactName": "飞书桥接Codex-${version}-win-x64.${ext}",
+      "signAndEditExecutable": false
+    }
   }
 }

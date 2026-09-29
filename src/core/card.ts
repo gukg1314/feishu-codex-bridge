@@ -82,25 +82,23 @@ function quotedPrompt(prompt: string): CardElement[] {
 
 export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
   const elements: CardElement[] = quotedPrompt(snapshot.prompt);
-
-  if (snapshot.details?.length) {
+  const summary = snapshot.summary?.trim();
+  if (snapshot.status === "running") {
+    elements.push(markdown(`<font color='blue'>${snapshot.currentStep ? `正在执行 · ${snapshot.currentStep}` : "正在执行…"}</font>`));
+    if (summary && summary !== "正在执行…") elements.push(markdown(`<font color='grey'>${summary}</font>`));
+    const steps: { title: string; detail?: string }[] = snapshot.steps?.slice(-3)
+      ?? snapshot.details?.slice(-3).map((detail) => ({ title: detail })) ?? [];
     elements.push({
       tag: "collapsible_panel",
       expanded: false,
-      header: { title: { tag: "plain_text", content: "执行过程" } },
-      elements: [markdown(snapshot.details.slice(-10).map((line) => `• ${line}`).join("\n"))],
+      header: { title: { tag: "plain_text", content: "执行过程（最近 3 步）" } },
+      elements: [markdown(steps?.length
+        ? steps.map((step, index) => `${index + 1}. **${step.title}**${step.detail ? `\n   ${step.detail}` : ""}`).join("\n\n")
+        : "等待进度更新")],
     });
-  }
-  const summary = snapshot.summary?.trim();
-  if (summary && !((snapshot.status === "running" && summary === "正在执行…")
-    || (snapshot.status === "stopped" && summary === "已停止"))) {
-    elements.push(markdown(summary));
-  }
-
-  if (snapshot.status === "running") {
-    elements.push(markdown("<font color='blue'>正在执行…</font>"));
     elements.push(row([button(snapshot, "停止", "stop_session")]));
   } else if (snapshot.status === "question" && snapshot.question) {
+    if (summary && summary !== "等待回答") elements.push(markdown(summary));
     elements.push(markdown(`**请回答以下问题**\n${snapshot.question.text}`));
     const options = snapshot.question.options?.slice(0, 6) ?? [];
     if (options.length) {
@@ -115,6 +113,7 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
     }
     elements.push(row([button(snapshot, "取消", "permission_deny")]));
   } else if (snapshot.status === "approval" && snapshot.approval) {
+    if (summary && summary !== "等待审批") elements.push(markdown(summary));
     elements.push(markdown(`**等待确认**\n${snapshot.approval.title}${snapshot.approval.detail ? `\n${snapshot.approval.detail}` : ""}`));
     elements.push(row([
       button(snapshot, "允许一次", "permission_allow", undefined, "primary_filled"),
@@ -123,7 +122,10 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
   } else if (snapshot.status === "stopped") {
     elements.push(markdown("<font color='grey'>已停止</font>"));
   } else if (snapshot.status === "failed") {
+    if (summary) elements.push(markdown(summary));
     elements.push(markdown("<font color='red'>执行遇到问题</font>"));
+  } else if (summary) {
+    elements.push(markdown(summary));
   }
 
   return {

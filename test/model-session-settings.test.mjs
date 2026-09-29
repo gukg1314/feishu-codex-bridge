@@ -88,7 +88,7 @@ test('线程和 turn 请求使用所选模型与权限参数', async () => {
   });
   assert.deepEqual(requests[2].params, {
     threadId: 'thread-1', cwd: '/tmp/work', input: [{ type: 'text', text: '继续', text_elements: [] }],
-    model: 'gpt-6-sol', effort: 'max', approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' },
+    model: 'gpt-6-sol', effort: 'max', approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' }, summary: 'auto',
   });
   assert.equal('effort' in requests[3].params, false);
 });

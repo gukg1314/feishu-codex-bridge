@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Menu, nativeImage, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from 'electron';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -8,6 +8,7 @@ import { LarkCliTransport } from '../core/lark';
 import type { BridgeSettings, BridgeStatus } from '../core/types';
 import type { DesktopSnapshot, LogEntry, SettingsInput } from './protocol';
 import { defaultSettings, loadSettings, saveSettings, validateSettings, type SavedSettings } from './settings';
+import { decideWindowClose } from './window-close';
 
 const profile = 'bridge';
 const stopped: BridgeStatus = { state: 'stopped', activeTurns: 0, queuedMessages: 0 };
@@ -17,6 +18,7 @@ let bridge: Bridge | undefined;
 let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
+let closeDialogOpen = false;
 let logs: LogEntry[] = [];
 let operations: Promise<unknown> = Promise.resolve();
 
@@ -92,7 +94,7 @@ async function startBridge(): Promise<void> {
     workDir: dataPath('bridge-files'),
     log: (level, message) => recordLog(level.toUpperCase() as LogEntry['level'], message)
   });
-  const codex = new CodexClient({ binaryPath: binaryPath('codex'), log: recordLog });
+  const codex = new CodexClient({ binaryPath: binaryPath('codex'), version: app.getVersion(), log: recordLog });
   bridge = new Bridge({
     settings, lark, codex, storageDir: dataPath('state'), log: recordLog,
     onStatus: (next) => { status = next; publish(); }
@@ -177,6 +179,31 @@ function showWindow(): void {
   window.focus();
 }
 
+async function requestWindowClose(): Promise<void> {
+  const currentWindow = window;
+  if (quitting || closeDialogOpen || !currentWindow || currentWindow.isDestroyed()) return;
+  closeDialogOpen = true;
+  try {
+    const action = await decideWindowClose(process.platform, async (options) => {
+      recordLog('INFO', 'Windows 关闭确认已显示');
+      const result = await dialog.showMessageBox(currentWindow, { type: 'question', noLink: true, ...options });
+      return result.response;
+    });
+    if (quitting) return;
+    if (action === 'quit') {
+      recordLog('INFO', '窗口关闭选择：关闭工具');
+      app.quit();
+    } else {
+      currentWindow.hide();
+      if (process.platform === 'win32') recordLog('INFO', '窗口关闭选择：最小化到托盘，桥接继续运行');
+    }
+  } catch (error) {
+    recordLog('ERROR', `窗口关闭确认失败：${error instanceof Error ? error.message : '未知错误'}`);
+  } finally {
+    closeDialogOpen = false;
+  }
+}
+
 function updateTray(): void {
   if (!tray) return;
   tray.setContextMenu(Menu.buildFromTemplate([
@@ -205,7 +232,7 @@ function createWindow(): void {
     }
   });
   window.on('close', (event) => {
-    if (!quitting) { event.preventDefault(); window?.hide(); }
+    if (!quitting) { event.preventDefault(); void requestWindowClose(); }
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -216,16 +243,19 @@ function createWindow(): void {
 }
 
 function createTray(): void {
+  const windows = process.platform === 'win32';
   const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, 'bar.png')
-    : path.resolve(__dirname, '../../icon/bar.png');
-  const icon = nativeImage.createFromPath(iconPath)
-    .crop({ x: 497, y: 263, width: 545, height: 474 })
-    .resize({ height: 18 });
+    ? path.join(process.resourcesPath, windows ? 'main.png' : 'bar.png')
+    : path.resolve(__dirname, windows ? '../../icon/main.png' : '../../icon/bar.png');
+  const source = nativeImage.createFromPath(iconPath);
+  const icon = windows
+    ? source.resize({ width: 32, height: 32 })
+    : source.crop({ x: 497, y: 263, width: 545, height: 474 }).resize({ height: 18 });
   tray = new Tray(icon);
   tray.setToolTip('飞书桥接Codex');
   tray.on('click', showWindow);
   updateTray();
+  recordLog('INFO', windows ? 'Windows 托盘已就绪，可从托盘恢复窗口' : '托盘已就绪');
 }
 
 app.on('before-quit', (event) => {
@@ -245,7 +275,7 @@ void app.whenReady().then(async () => {
 
   ipcMain.handle('bridge:get-snapshot', () => snapshot());
   ipcMain.handle('bridge:list-models', async () => {
-    const client = new CodexClient({ binaryPath: binaryPath('codex'), log: recordLog });
+    const client = new CodexClient({ binaryPath: binaryPath('codex'), version: app.getVersion(), log: recordLog });
     await client.start();
     try {
       return await client.listModels();
@@ -257,7 +287,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle('bridge:start', () => serialize(async () => { await startBridge(); return snapshot(); }));
   ipcMain.handle('bridge:stop', () => serialize(async () => { await stopBridge(); return snapshot(); }));
   ipcMain.handle('bridge:window-action', (_event, action: string) => {
-    if (action === 'close') window?.hide();
+    if (action === 'close') return requestWindowClose();
     else if (action === 'minimize') window?.minimize();
     else if (action === 'maximize') window?.isMaximized() ? window.unmaximize() : window?.maximize();
   });
