@@ -10,7 +10,7 @@ export type LarkCard = {
   config: {
     update_multi: true;
     enable_forward: false;
-    width_mode: "fill";
+    width_mode: "default";
     summary: { content: string };
   };
   body: {
@@ -148,7 +148,7 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
     config: {
       update_multi: true,
       enable_forward: false,
-      width_mode: "fill",
+      width_mode: "default",
       summary: { content: `Codex · ${snapshot.status === "running" ? "正在执行" : snapshot.status === "completed" ? "已完成" : snapshot.status === "stopped" ? "已停止" : snapshot.status === "failed" ? "失败" : "等待回复"}` },
     },
     body: {
