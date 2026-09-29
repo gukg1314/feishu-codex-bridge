@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import test from 'node:test';
 import { artifactNames, nextPatchVersion, publishArtifacts, removeLegacyUnpackedDirs, replaceVersionFields } from '../scripts/package-release.mjs';
 
-test('release uses the next patch version and the expected DMG/portable EXE names', () => {
+test('release uses the next patch version and expected DMG/Windows installer names', () => {
   assert.equal(nextPatchVersion('1.0.6'), '1.0.7');
+  assert.equal(nextPatchVersion('1.0.7'), '1.0.8');
   assert.equal(nextPatchVersion('2.4.9'), '2.4.10');
   assert.deepEqual(artifactNames('1.0.7'), [
     '飞书桥接Codex-1.0.7-mac-arm64.dmg',
     '飞书桥接Codex-1.0.7-win-x64.exe',
   ]);
   assert.throws(() => nextPatchVersion('1.0'), /三段数字/);
+});
+
+test('Windows release uses a selectable NSIS installer', async () => {
+  const packageInfo = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
+  const releaseScript = await readFile(resolve('scripts/package-release.mjs'), 'utf8');
+
+  assert.deepEqual(packageInfo.build.win.target, [{ target: 'nsis', arch: ['x64'] }]);
+  assert.equal(packageInfo.build.nsis.oneClick, false);
+  assert.equal(packageInfo.build.nsis.allowToChangeInstallationDirectory, true);
+  assert.match(releaseScript, /\['win32-x64',\s*\['--win',\s*'nsis',\s*'--x64'\]/);
 });
 
 test('release version writes preserve JSON formatting and leave later version fields alone', () => {

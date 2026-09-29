@@ -30,6 +30,7 @@ export interface CodexProgress {
   key: string;
   text: string;
   detail?: string;
+  phase?: 'commentary' | 'final_answer';
   status?: 'pending' | 'inProgress' | 'completed' | 'failed';
 }
 
@@ -371,10 +372,11 @@ export class CodexClient implements CodexPort {
     if (incomingTurnId !== running.turnId) return;
     if (method === 'item/agentMessage/delta') {
       const itemId = String(params.itemId ?? '');
-      const item = running.messages.get(itemId) ?? { text: '' };
+      const item: { text: string; phase?: string } = running.messages.get(itemId) ?? { text: '' };
       item.text += String(params.delta ?? '');
       running.messages.set(itemId, item);
-      this.emitProgress(running, { kind: 'message', key: `message:${itemId}`, text: item.text });
+      this.emitProgress(running, { kind: 'message', key: `message:${itemId}`, text: item.text,
+        phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : undefined });
     } else if (method === 'item/reasoning/summaryPartAdded') {
       const itemId = String(params.itemId ?? '');
       const index = params.summaryIndex;
@@ -400,12 +402,24 @@ export class CodexClient implements CodexPort {
         this.emitProgress(running, { kind: 'plan', key: `plan:${index}`, text: step.step, status });
       });
     } else if (method === 'item/started') {
-      this.emitOperation(running, params.item as JsonObject | undefined, 'inProgress');
+      const item = params.item as JsonObject | undefined;
+      if (item?.type === 'agentMessage' && typeof item.id === 'string') {
+        running.messages.set(item.id, {
+          text: typeof item.text === 'string' ? item.text : '',
+          phase: typeof item.phase === 'string' ? item.phase : undefined,
+        });
+      } else {
+        this.emitOperation(running, item, 'inProgress');
+      }
     } else if (method === 'item/completed') {
       const item = params.item as JsonObject | undefined;
       if (item?.type === 'agentMessage' && typeof item.id === 'string') {
-        running.messages.set(item.id, { text: String(item.text ?? ''), phase: typeof item.phase === 'string' ? item.phase : undefined });
-        this.emitProgress(running, { kind: 'message', key: `message:${item.id}`, text: String(item.text ?? '') });
+        const previous = running.messages.get(item.id);
+        const text = typeof item.text === 'string' ? item.text : previous?.text ?? '';
+        const phase = typeof item.phase === 'string' ? item.phase : previous?.phase;
+        running.messages.set(item.id, { text, phase });
+        this.emitProgress(running, { kind: 'message', key: `message:${item.id}`, text,
+          phase: phase === 'commentary' || phase === 'final_answer' ? phase : undefined });
       } else if (item?.type === 'reasoning' && typeof item.id === 'string' && Array.isArray(item.summary)) {
         const parts = running.summaries.get(item.id) ?? new Map<number, string>();
         (item.summary as unknown[]).forEach((value, index) => {
@@ -434,7 +448,7 @@ export class CodexClient implements CodexPort {
 
   private emitProgress(running: RunningTurn, progress: CodexProgress): void {
     if (!progress.text.trim()) return;
-    const signature = `${progress.text}\u0000${progress.detail ?? ''}\u0000${progress.status ?? ''}`;
+    const signature = `${progress.text}\u0000${progress.detail ?? ''}\u0000${progress.status ?? ''}\u0000${progress.phase ?? ''}`;
     if (running.progress.get(progress.key) === signature) return;
     running.progress.set(progress.key, signature);
     running.events.onProgress(progress);
@@ -447,16 +461,30 @@ export class CodexClient implements CodexPort {
     let text: string;
     let detail: string | undefined;
     if (item.type === 'commandExecution') {
-      text = phase === 'inProgress' ? '正在运行命令' : failed ? '命令执行失败' : '命令执行完成';
-      detail = typeof item.exitCode === 'number' ? `退出码 ${item.exitCode}` : undefined;
+      const actions = Array.isArray(item.commandActions) ? item.commandActions as JsonObject[] : [];
+      const action = actions.find((value) => value.type === 'read' || value.type === 'listFiles' || value.type === 'search');
+      if (action?.type === 'read') text = phase === 'inProgress' ? '正在读取文件' : failed ? '读取文件遇到问题' : '已读取文件';
+      else if (action?.type === 'listFiles') text = phase === 'inProgress' ? '正在查看文件列表' : failed ? '查看文件列表遇到问题' : '已查看文件列表';
+      else if (action?.type === 'search') text = phase === 'inProgress' ? '正在搜索文件' : failed ? item.exitCode === 1 ? '搜索未找到结果' : '搜索文件遇到问题' : '已搜索文件';
+      else text = phase === 'inProgress' ? '正在运行命令' : failed ? '命令运行遇到问题' : '已运行命令';
+      if (phase === 'completed' && failed) {
+        this.options.log('WARN', `Codex command finished with status=${String(item.status ?? 'unknown')}, exitCode=${typeof item.exitCode === 'number' ? item.exitCode : 'unknown'}`);
+      }
     } else if (item.type === 'fileChange') {
       const changes = Array.isArray(item.changes) ? item.changes as JsonObject[] : [];
-      text = phase === 'inProgress' ? '正在修改文件' : failed ? '文件修改失败' : '文件修改完成';
+      text = phase === 'inProgress' ? '正在修改文件' : failed ? '文件修改未完成' : '已修改文件';
       detail = changes.map((change) => typeof change.path === 'string' ? change.path.split(/[\\/]/).pop() : undefined)
         .filter(Boolean).slice(0, 3).join('、') || undefined;
     } else if (item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') {
       const tool = typeof item.tool === 'string' ? item.tool : typeof item.name === 'string' ? item.name : '工具';
-      text = phase === 'inProgress' ? `正在调用 ${tool}` : failed ? `${tool} 调用失败` : `${tool} 调用完成`;
+      text = phase === 'inProgress' ? '正在使用工具' : failed ? '工具调用未完成' : '已使用工具';
+      detail = tool;
+    } else if (item.type === 'imageView') {
+      text = phase === 'inProgress' ? '正在查看图像' : '已查看图像';
+    } else if (item.type === 'webSearch') {
+      text = phase === 'inProgress' ? '正在搜索网页' : '已搜索网页';
+    } else if (item.type === 'imageGeneration') {
+      text = phase === 'inProgress' ? '正在生成图像' : '已生成图像';
     } else {
       return;
     }

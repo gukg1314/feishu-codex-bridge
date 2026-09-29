@@ -80,21 +80,31 @@ function quotedPrompt(prompt: string): CardElement[] {
   return chunks;
 }
 
+function progressHistory(steps: { title: string; detail?: string }[]): CardElement[] {
+  if (!steps.length) return [markdown("等待进度更新")];
+  const chunks: string[] = [];
+  steps.forEach((step, index) => {
+    const entry = `${index + 1}. **${step.title}**${step.detail ? `\n   ${step.detail}` : ""}`;
+    const last = chunks.length - 1;
+    if (last < 0 || chunks[last].length + entry.length > 3000) chunks.push(entry);
+    else chunks[last] += `\n\n${entry}`;
+  });
+  return chunks.map(markdown);
+}
+
 export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
   const elements: CardElement[] = quotedPrompt(snapshot.prompt);
   const summary = snapshot.summary?.trim();
   if (snapshot.status === "running") {
     elements.push(markdown(`<font color='blue'>${snapshot.currentStep ? `正在执行 · ${snapshot.currentStep}` : "正在执行…"}</font>`));
     if (summary && summary !== "正在执行…") elements.push(markdown(`<font color='grey'>${summary}</font>`));
-    const steps: { title: string; detail?: string }[] = snapshot.steps?.slice(-3)
-      ?? snapshot.details?.slice(-3).map((detail) => ({ title: detail })) ?? [];
+    const steps: { title: string; detail?: string }[] = snapshot.steps
+      ?? snapshot.details?.map((detail) => ({ title: detail })) ?? [];
     elements.push({
       tag: "collapsible_panel",
       expanded: false,
-      header: { title: { tag: "plain_text", content: "执行过程（最近 3 步）" } },
-      elements: [markdown(steps?.length
-        ? steps.map((step, index) => `${index + 1}. **${step.title}**${step.detail ? `\n   ${step.detail}` : ""}`).join("\n\n")
-        : "等待进度更新")],
+      header: { title: { tag: "plain_text", content: "执行过程" } },
+      elements: progressHistory(steps),
     });
     elements.push(row([button(snapshot, "停止", "stop_session")]));
   } else if (snapshot.status === "question" && snapshot.question) {

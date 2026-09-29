@@ -122,7 +122,7 @@ export async function packageRelease() {
     await mkdir(output);
     for (const [target, builderArgs, artifact] of [
       ['darwin-arm64', ['--mac', 'dmg', '--arm64'], artifactNames(version)[0]],
-      ['win32-x64', ['--win', 'portable', '--x64'], artifactNames(version)[1]]
+      ['win32-x64', ['--win', 'nsis', '--x64'], artifactNames(version)[1]]
     ]) {
       console.log(`[打包] 构建 ${target}`);
       await runNode('scripts/prepare-binaries.mjs', [target]);

@@ -10,8 +10,14 @@ type ProgressStep = { title: string; detail?: string };
 
 const PROGRESS_INTERVAL_MS = 2_500;
 
-function brief(value: string, limit = 220): string {
-  return value.replace(/\s+/g, ' ').trim().slice(0, limit);
+function isChineseProgress(value: string): boolean {
+  const prose = value
+    .replace(/```[\s\S]*?```|`[^`]*`/g, '')
+    .replace(/https?:\/\/\S+|\b[A-Za-z]:\\[^\s，。；：]+|\/[A-Za-z0-9._~+@%/-]+|\b[\w.-]+\.[A-Za-z0-9]{1,8}\b/g, '');
+  const chinese = (prose.match(/[\u3400-\u9fff]/g) ?? []).length;
+  const englishWords = (prose.match(/[A-Za-z]+(?:'[A-Za-z]+)?/g) ?? []).length;
+  const englishNarrative = /\b(?:now|let's|the|this|that|with|each|shows?|looks?|found|reviewing|we|i)\b/i.test(prose);
+  return chinese > 0 && !englishNarrative && (englishWords < 5 || chinese >= englishWords);
 }
 
 interface ActiveMessage {
@@ -29,9 +35,13 @@ interface ActiveMessage {
   lastProgressFingerprint?: string;
   progressTimer?: ReturnType<typeof setTimeout>;
   progressSteps: Map<string, ProgressStep>;
+  omittedProgress: Set<string>;
+  activePlan?: { key: string; title: string };
+  activeOperations: Map<string, string>;
+  hasCommentary: boolean;
   currentStep?: string;
-  currentStepKey?: string;
-  latestPublic?: string;
+  latestNarrative?: string;
+  latestOperation?: string;
   reaction?: Promise<string | undefined>;
   reactionRemoval?: Promise<void>;
 }
@@ -171,11 +181,11 @@ export class Bridge {
         try {
           await this.processMessage(route, message, generation);
         } catch (error) {
-          this.options.log('ERROR', 'Message processing failed');
+          this.options.log('ERROR', `Message processing failed: ${(error as Error).message}`);
           const active = this.active.get(route);
           if (active && active.message.messageId === message.messageId) {
             this.markTerminal(active);
-            await this.updateCard(active, { status: 'failed', summary: (error as Error).message, question: undefined, approval: undefined });
+            await this.updateCard(active, { status: 'failed', summary: '执行遇到问题，请查看运行日志', question: undefined, approval: undefined });
           }
         } finally {
           this.inFlightIds.delete(message.messageId);
@@ -214,7 +224,8 @@ export class Bridge {
     await this.store.markSeen(message.messageId);
     const active: ActiveMessage = {
       route, message, cardMessageId, snapshot, updates: Promise.resolve(), stopRequested: false,
-      terminal: false, prompts: [], lastProgressAt: 0, progressSteps: new Map(),
+      terminal: false, prompts: [], lastProgressAt: 0, progressSteps: new Map(), omittedProgress: new Set(),
+      activeOperations: new Map(), hasCommentary: false,
     };
     this.active.set(route, active);
     this.cards.set(cardMessageId, active);
@@ -244,7 +255,7 @@ export class Bridge {
       }
       active.threadId = threadId;
       if (active.stopRequested || generation !== this.generation) return;
-      const instruction = '若生成需要回传的本地图片或文件，请在最终回复中使用指向绝对路径的 Markdown 链接。';
+      const instruction = '执行过程中，对外公开的进度说明和计划请使用简体中文；代码、文件名、路径、命令和专有名词可保留原文。若生成需要回传的本地图片或文件，请在最终回复中使用指向绝对路径的 Markdown 链接。';
       const run = await this.options.codex.startTurn(threadId, `${message.text}\n\n${instruction}`.trim(), message.attachments, settings.workingDirectory, {
         onProgress: (text) => this.onProgress(active, text),
         onQuestion: (request) => this.enqueuePrompt(active, { kind: 'question', value: request }),
@@ -280,48 +291,59 @@ export class Bridge {
 
   private onProgress(active: ActiveMessage, progress: CodexProgress): void {
     if (active.stopRequested || active.terminal || !this.cards.has(active.cardMessageId)) return;
-    const text = brief(progress.text);
+    const text = progress.text.trim();
     if (!text) return;
-    if (progress.kind === 'summary' || progress.kind === 'message') {
-      active.latestPublic = text;
-      const key = active.currentStepKey && active.progressSteps.has(active.currentStepKey)
-        ? active.currentStepKey : [...active.progressSteps.keys()].at(-1);
-      if (key) active.progressSteps.set(key, { ...active.progressSteps.get(key)!, detail: text });
-      else {
-        active.currentStep = '整理进度';
-        active.currentStepKey = progress.key;
-        active.progressSteps.set(progress.key, { title: '公开进度摘要', detail: text });
+    if (progress.kind === 'message') {
+      if (progress.phase === 'final_answer') return;
+      if (!isChineseProgress(text)) {
+        this.logOmittedProgress(active, progress);
+        return;
       }
+      if (!active.hasCommentary) this.options.log('INFO', 'Codex public commentary selected for running card');
+      active.hasCommentary = true;
+      active.latestNarrative = text;
+      active.progressSteps.set(progress.key, { title: text });
+    } else if (progress.kind === 'summary') {
+      if (active.hasCommentary) return;
+      if (!isChineseProgress(text)) {
+        this.logOmittedProgress(active, progress);
+        return;
+      }
+      active.latestNarrative = text;
     } else if (progress.kind === 'plan') {
-      if (progress.status === 'pending' && active.currentStep) return;
-      if (progress.status === 'inProgress') {
-        active.currentStep = text;
-        active.currentStepKey = progress.key;
-        if (!active.latestPublic) active.latestPublic = `计划：${text}`;
-      } else if (progress.status === 'completed' && active.currentStepKey === progress.key) {
-        active.currentStepKey = undefined;
+      if (!isChineseProgress(text)) {
+        this.logOmittedProgress(active, progress);
+        return;
       }
-      active.progressSteps.delete(progress.key);
+      if (progress.status === 'inProgress') {
+        active.activePlan = { key: progress.key, title: text };
+        active.latestOperation = `计划：${text}`;
+      } else if (active.activePlan?.key === progress.key) {
+        active.activePlan = undefined;
+      }
       active.progressSteps.set(progress.key, {
         title: text,
         detail: progress.status === 'completed' ? '已完成' : progress.status === 'inProgress' ? '执行中' : '待开始',
       });
     } else {
-      if (!active.currentStepKey) {
-        active.currentStep = text;
-        active.currentStepKey = progress.status === 'inProgress' ? progress.key : undefined;
-      } else if (progress.status !== 'inProgress' && active.currentStepKey === progress.key) {
-        active.currentStepKey = undefined;
-      }
-      active.latestPublic = progress.detail ? `${text} · ${brief(progress.detail, 100)}` : text;
-      active.progressSteps.delete(progress.key);
+      if (progress.status === 'inProgress') active.activeOperations.set(progress.key, text);
+      else active.activeOperations.delete(progress.key);
+      if (!active.latestOperation) this.options.log('INFO', 'Codex operation progress selected for running card');
+      active.latestOperation = progress.detail ? `${text} · ${progress.detail.trim()}` : text;
       active.progressSteps.set(progress.key, {
         title: text,
-        detail: progress.detail ? brief(progress.detail, 160) : progress.status === 'failed' ? '失败' : progress.status === 'completed' ? '已完成' : '执行中',
+        detail: progress.detail?.trim() || undefined,
       });
     }
-    while (active.progressSteps.size > 3) active.progressSteps.delete(active.progressSteps.keys().next().value!);
+    active.currentStep = [...active.activeOperations.values()].at(-1) || active.activePlan?.title;
     if (!active.prompts.length) this.scheduleProgress(active);
+  }
+
+  private logOmittedProgress(active: ActiveMessage, progress: CodexProgress): void {
+    const key = `${progress.kind}:${progress.key}`;
+    if (active.omittedProgress.has(key) || progress.text.length < 24) return;
+    active.omittedProgress.add(key);
+    this.options.log('INFO', `Codex ${progress.kind} omitted from card: non-Chinese narrative`);
   }
 
   private scheduleProgress(active: ActiveMessage): void {
@@ -337,7 +359,7 @@ export class Bridge {
     return {
       status: 'running',
       currentStep: active.currentStep,
-      summary: active.latestPublic || '正在执行…',
+      summary: active.latestNarrative || active.latestOperation || '正在执行…',
       steps: [...active.progressSteps.values()],
     };
   }
@@ -429,8 +451,8 @@ export class Bridge {
     if (active.stopRequested || result.status === 'interrupted') {
       await this.updateCard(active, { status: 'stopped', summary: '已停止', question: undefined, approval: undefined });
     } else if (result.status === 'failed') {
-      await this.updateCard(active, { status: 'failed', summary: result.error || '执行失败', question: undefined, approval: undefined });
-      this.options.log('ERROR', 'Codex turn failed');
+      await this.updateCard(active, { status: 'failed', summary: '执行遇到问题，请查看运行日志', question: undefined, approval: undefined });
+      this.options.log('ERROR', `Codex turn failed: ${result.error || 'unknown error'}`);
     } else {
       await this.updateCard(active, { status: 'completed', summary: result.text || '已完成', steps: [], details: [], question: undefined, approval: undefined });
       await this.sendOutputFiles(active.message.chatId, result.text);

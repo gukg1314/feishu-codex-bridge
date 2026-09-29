@@ -16,6 +16,23 @@ const loaded = { exports: {} };
 new Function('require', 'module', 'exports', built.outputFiles[0].text)(require, loaded, loaded.exports);
 const { decideWindowClose, windowsCloseDialog } = loaded.exports;
 
+const startupBuilt = buildSync({
+  entryPoints: [resolve('src/desktop/startup-window.ts')],
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  write: false,
+});
+const startupLoaded = { exports: {} };
+new Function('require', 'module', 'exports', startupBuilt.outputFiles[0].text)(require, startupLoaded, startupLoaded.exports);
+const { shouldShowOnStartup } = startupLoaded.exports;
+
+test('Windows normal startup shows the window immediately; login launch and macOS keep hidden startup', () => {
+  assert.equal(shouldShowOnStartup('win32', false), true);
+  assert.equal(shouldShowOnStartup('win32', true), false);
+  assert.equal(shouldShowOnStartup('darwin', false), false);
+});
+
 test('Windows X and in-app close choices map to hide or quit', async () => {
   const seen = [];
   assert.equal(await decideWindowClose('win32', async (options) => {

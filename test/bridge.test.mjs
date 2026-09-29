@@ -129,6 +129,10 @@ test('模型参数贯穿新建线程、恢复线程与 turn', async (t) => {
   });
   assert.equal(codex.turns[0].model, 'gpt-6-sol');
   assert.equal(codex.turns[0].effort, 'max');
+  assert.match(codex.turns[0].text, /简体中文/);
+  for (const exception of ['代码', '路径', '命令', '专有名词']) {
+    assert.ok(codex.turns[0].text.includes(exception), `语言要求应保留例外：${exception}`);
+  }
   codex.turns[0].complete({ status: 'completed', text: '完成' });
   await waitFor(() => lark.cards[0].snapshot.status === 'completed');
 
@@ -255,11 +259,14 @@ test('进度突发会刷新尾部，终态会取消延迟中的旧进度', async
   turn.events.onProgress({ kind: 'plan', key: 'plan:0', text: '准备环境', status: 'completed' });
   turn.events.onProgress({ kind: 'plan', key: 'plan:1', text: '读取配置', status: 'completed' });
   turn.events.onProgress({ kind: 'plan', key: 'plan:2', text: '核对字段', status: 'completed' });
-  turn.events.onProgress({ kind: 'plan', key: 'plan:3', text: '写入配置', status: 'inProgress' });
+  turn.events.onProgress({ kind: 'plan', key: 'plan:3', text: '写入配置', status: 'completed' });
+  turn.events.onProgress({ kind: 'plan', key: 'plan:4', text: '确认结果', status: 'inProgress' });
   turn.events.onProgress({ kind: 'summary', key: 'reasoning:item:0', text: '最新公开摘要' });
 
-  await waitFor(() => card.snapshot.summary === '最新公开摘要' && card.snapshot.currentStep === '写入配置', 2_800);
-  assert.deepEqual(card.snapshot.steps.map((step) => step.title), ['读取配置', '核对字段', '写入配置']);
+  await waitFor(() => card.snapshot.summary === '最新公开摘要' && card.snapshot.currentStep === '确认结果', 2_800);
+  assert.deepEqual(card.snapshot.steps.map((step) => step.title), [
+    '准备环境', '读取配置', '核对字段', '写入配置', '确认结果',
+  ]);
 
   turn.events.onProgress({ kind: 'summary', key: 'reasoning:item:0', text: '终态之后的旧进度' });
   turn.complete({ status: 'completed', text: '最终结果' });
@@ -269,6 +276,40 @@ test('进度突发会刷新尾部，终态会取消延迟中的旧进度', async
   assert.equal(card.snapshot.status, 'completed');
   assert.equal(card.snapshot.summary, '最终结果');
   assert.equal(card.snapshot.version, terminalVersion);
+});
+
+test('英文叙述不进入进度卡，中文进度路径与操作详情原样保留', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_english_progress'));
+  await waitFor(() => codex.turns.length === 1);
+  const turn = codex.turns[0];
+  const card = lark.cards[0];
+
+  turn.events.onProgress({
+    kind: 'operation', key: 'operation:read-config', text: '正在读取文件',
+    detail: 'settings.json', status: 'inProgress',
+  });
+  turn.events.onProgress({
+    kind: 'summary', key: 'reasoning:summary', text: "Now let's examine each tile: 鸡 (traditional)",
+  });
+  turn.events.onProgress({
+    kind: 'message', phase: 'commentary', key: 'message:english-commentary',
+    text: 'I found the settings file and am reviewing it.',
+  });
+  turn.events.onProgress({
+    kind: 'message', phase: 'commentary', key: 'message:commentary',
+    text: '我正在读取 /Users/example/README.md。',
+  });
+
+  await waitFor(() => card.snapshot.version > 1, 2_800);
+  assert.equal(card.snapshot.summary, '我正在读取 /Users/example/README.md。');
+  assert.equal(card.snapshot.steps.some((step) => step.title.includes('I found the settings file')), false);
+  assert.equal(card.snapshot.steps.some((step) => step.title.includes('Now let\'s examine each tile')), false);
+  assert.equal(card.snapshot.steps.find((step) => step.title === '正在读取文件')?.detail, 'settings.json');
+  assert.ok(card.snapshot.steps.some((step) => step.title === '我正在读取 /Users/example/README.md。'));
+
+  turn.complete({ status: 'interrupted', text: '' });
+  await waitFor(() => bridge.getStatus().activeTurns === 0);
 });
 
 test('旧版本停止仍有效，旧版本提问与审批按钮会被拒绝', async (t) => {

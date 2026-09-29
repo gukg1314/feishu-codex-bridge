@@ -103,7 +103,7 @@ test('卡片沿用引用、状态、按钮和带版本的回调', () => {
   assert.match(card.body.elements[1].content, /正在执行/);
   assert.equal(card.body.elements[2].tag, 'collapsible_panel');
   assert.equal(card.body.elements[2].expanded, false);
-  assert.equal(card.body.elements[2].header.title.content, '执行过程（最近 3 步）');
+  assert.equal(card.body.elements[2].header.title.content, '执行过程');
   const buttons = card.body.elements.find((item) => item.tag === 'column_set');
   const value = buttons.columns[0].elements[0].behaviors[0].value;
   assert.deepEqual(value, { v: 1, action: 'stop_session', sessionId: 'session', cardVersion: 2 });

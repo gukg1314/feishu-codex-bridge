@@ -8,6 +8,7 @@ import { LarkCliTransport } from '../core/lark';
 import type { BridgeSettings, BridgeStatus } from '../core/types';
 import type { DesktopSnapshot, LogEntry, SettingsInput } from './protocol';
 import { defaultSettings, loadSettings, saveSettings, validateSettings, type SavedSettings } from './settings';
+import { shouldShowOnStartup } from './startup-window';
 import { decideWindowClose } from './window-close';
 
 const profile = 'bridge';
@@ -57,6 +58,23 @@ function recordLog(level: LogEntry['level'], message: string): void {
   if (logs.length > 200) logs.length = 200;
   void appendFile(dataPath('bridge.log'), `${JSON.stringify(entry)}\n`, { mode: 0o600 }).catch(() => {});
   publish();
+}
+
+async function reportStartupFailure(error: unknown): Promise<void> {
+  const reason = redact(error instanceof Error ? error.message : String(error));
+  const detail = redact(error instanceof Error ? error.stack ?? error.message : String(error));
+  console.error(`[启动] 客户端启动失败：${detail}`);
+  let logPath = '';
+  try {
+    logPath = dataPath('bridge.log');
+    await mkdir(path.dirname(logPath), { recursive: true });
+    const entry: LogEntry = { time: new Date().toLocaleTimeString('zh-CN', { hour12: false }), level: 'ERROR', message: `客户端启动失败：${detail}` };
+    await appendFile(logPath, `${JSON.stringify(entry)}\n`, { mode: 0o600 });
+  } catch (logError) {
+    console.error('[启动] 写入运行日志失败：', logError);
+  }
+  dialog.showErrorBox('飞书桥接Codex 启动失败', `${reason}\n\n详细信息请查看：${logPath || '运行日志'}`);
+  app.quit();
 }
 
 async function restoreLogs(): Promise<void> {
@@ -219,10 +237,12 @@ function updateTray(): void {
 
 function createWindow(): void {
   const nativeMacTitleBar = process.platform === 'darwin';
+  const wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin;
+  const showImmediately = shouldShowOnStartup(process.platform, wasOpenedAtLogin);
   window = new BrowserWindow({
     width: 1080, height: 730, minWidth: 760, minHeight: 650,
     frame: nativeMacTitleBar, titleBarStyle: nativeMacTitleBar ? 'hiddenInset' : undefined,
-    show: false, backgroundColor: '#ffffff',
+    show: showImmediately, backgroundColor: '#ffffff',
     icon: app.isPackaged
       ? path.join(process.resourcesPath, 'main.png')
       : path.resolve(__dirname, '../../icon/main.png'),
@@ -236,10 +256,11 @@ function createWindow(): void {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
-  void window.loadFile(path.resolve(__dirname, '../ui/index.html'));
+  void window.loadFile(path.resolve(__dirname, '../ui/index.html')).catch(reportStartupFailure);
   window.once('ready-to-show', () => {
-    if (!app.getLoginItemSettings().wasOpenedAtLogin) showWindow();
+    if (!wasOpenedAtLogin) showWindow();
   });
+  if (showImmediately) recordLog('INFO', 'Windows 主窗口已创建并显示');
 }
 
 function createTray(): void {
@@ -299,7 +320,4 @@ void app.whenReady().then(async () => {
   if (saved.settings.autoConnect) {
     void serialize(startBridge).catch(() => {});
   }
-}).catch((error) => {
-  recordLog('ERROR', `客户端初始化失败：${error instanceof Error ? error.message : '未知错误'}`);
-  app.quit();
-});
+}).catch(reportStartupFailure);
