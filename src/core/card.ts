@@ -103,7 +103,12 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
     elements.push({
       tag: "collapsible_panel",
       expanded: false,
-      header: { title: { tag: "plain_text", content: "执行过程" } },
+      header: {
+        title: { tag: "plain_text", content: "执行过程" },
+        icon: { tag: "standard_icon", token: "right_outlined" },
+        icon_position: "follow_text",
+        icon_expanded_angle: 90,
+      },
       elements: progressHistory(steps),
     });
     elements.push(row([button(snapshot, "停止", "stop_session")]));

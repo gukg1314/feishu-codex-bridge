@@ -43,6 +43,9 @@ test('运行卡片显示最新摘要、当前步骤、完整执行过程和停�
   assert.ok(history);
   assert.equal(history.expanded, false);
   assert.equal(history.header.title.content, '执行过程');
+  assert.equal(history.header.icon.token, 'right_outlined');
+  assert.equal(history.header.icon_position, 'follow_text');
+  assert.equal(history.header.icon_expanded_angle, 90);
   const historyText = history.elements.map((item) => item.content ?? '').join('\n');
   for (const step of ['检查目录', '读取配置', '核对字段', '写入配置', '确认结果']) {
     assert.ok(historyText.includes(step), `执行过程应包含：${step}`);
