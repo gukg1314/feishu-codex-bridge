@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:">
   <title>飞书桥接Codex</title>
-  <style>html, body { margin: 0; min-height: 100%; background: light-dark(#ffffff, #202329); } button, input, textarea { -webkit-app-region: no-drag; }</style>
+  <style>html, body { margin: 0; height: 100%; overflow: hidden; background: light-dark(#ffffff, #202329); } button, input, textarea { -webkit-app-region: no-drag; }</style>
 </head>
 <body>
 <div id="fc-bridge-demo" data-running="false" aria-label="飞书桥接Codex">
@@ -35,7 +35,10 @@
     #fc-bridge-demo *, #fc-bridge-demo *::before, #fc-bridge-demo *::after { box-sizing: border-box; }
     #fc-bridge-demo .fc-window {
       width: 100%;
+      height: 100vh;
       min-height: 650px;
+      display: flex;
+      flex-direction: column;
       overflow: hidden;
       background: var(--fc-window);
       border: 1px solid var(--fc-border);
@@ -44,6 +47,7 @@
     }
     #fc-bridge-demo .fc-titlebar {
       height: 52px;
+      flex: none;
       -webkit-app-region: drag;
       display: flex;
       align-items: center;
@@ -72,7 +76,7 @@
     html.fc-native-mac #fc-bridge-demo .fc-traffic { display: none; }
     #fc-bridge-demo .fc-title { font-size: 13px; font-weight: 500; white-space: nowrap; }
     #fc-bridge-demo .fc-version { font-size: 12px; color: var(--fc-muted); }
-    #fc-bridge-demo .fc-layout { display: grid; grid-template-columns: 194px minmax(0, 1fr); min-height: 597px; }
+    #fc-bridge-demo .fc-layout { display: grid; flex: 1; grid-template-columns: 194px minmax(0, 1fr); min-height: 0; }
     #fc-bridge-demo .fc-sidebar {
       display: flex;
       flex-direction: column;
@@ -100,7 +104,7 @@
     #fc-bridge-demo .fc-sidebar-foot {
       margin-top: auto; padding: 0 9px; color: var(--fc-muted); font-size: 12px; line-height: 1.6;
     }
-    #fc-bridge-demo .fc-main { min-width: 0; padding: 29px 34px 34px; background: var(--fc-window); }
+    #fc-bridge-demo .fc-main { min-width: 0; min-height: 0; overflow-y: auto; padding: 29px 34px 34px; background: var(--fc-window); }
     #fc-bridge-demo .fc-page[hidden] { display: none; }
     #fc-bridge-demo h1, #fc-bridge-demo h2, #fc-bridge-demo p { margin: 0; }
     #fc-bridge-demo h1 { font-size: 22px; line-height: 1.35; font-weight: 500; }
@@ -165,7 +169,7 @@
     #fc-bridge-demo .fc-settings-group:first-of-type { margin-top: 22px; padding-top: 0; border-top: 0; }
     #fc-bridge-demo .fc-group-head { margin-bottom: 16px; }
     #fc-bridge-demo .fc-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
-    #fc-bridge-demo .fc-field { display: grid; gap: 7px; min-width: 0; }
+    #fc-bridge-demo .fc-field { display: grid; align-content: start; gap: 7px; min-width: 0; }
     #fc-bridge-demo .fc-field.fc-span { grid-column: 1 / -1; }
     #fc-bridge-demo .fc-field label { font-size: 12px; font-weight: 500; }
     #fc-bridge-demo .fc-input, #fc-bridge-demo .fc-textarea {
@@ -199,7 +203,7 @@
     #fc-bridge-demo .fc-logs-intro { margin-top: 22px; color: var(--fc-muted); font-size: 12px; }
     #fc-bridge-demo .fc-logs-full { margin-top: 12px; }
     @media (max-width: 760px) {
-      #fc-bridge-demo .fc-layout { grid-template-columns: 1fr; }
+      #fc-bridge-demo .fc-layout { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
       #fc-bridge-demo .fc-sidebar { gap: 15px; padding: 15px; border-right: 0; border-bottom: 1px solid var(--fc-border); }
       #fc-bridge-demo .fc-nav { display: flex; gap: 5px; }
       #fc-bridge-demo .fc-nav button { width: auto; padding: 0 11px; }
@@ -224,7 +228,7 @@
         <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
         <span class="fc-title">飞书桥接Codex</span>
       </div>
-      <span class="fc-version">v1.0.4</span>
+      <span class="fc-version">v1.0.5</span>
     </div>
     <div class="fc-layout">
       <aside class="fc-sidebar">
@@ -309,7 +313,7 @@
               <label class="fc-switch-row cursor-interaction" for="fc-login-start"><span class="fc-switch-text"><span class="fc-switch-title">登录电脑时启动应用</span><span class="fc-switch-desc">打开桌面客户端</span></span><input class="fc-switch" id="fc-login-start" type="checkbox" role="switch"></label>
               <label class="fc-switch-row cursor-interaction" for="fc-auto-connect"><span class="fc-switch-text"><span class="fc-switch-title">应用启动后自动连接</span><span class="fc-switch-desc">自动启动飞书与 Codex 桥接</span></span><input class="fc-switch" id="fc-auto-connect" type="checkbox" role="switch"></label>
             </div>
-            <div class="fc-settings-footer"><button class="fc-button fc-primary cursor-interaction" type="button" data-action="save">保存设置</button><span class="fc-save-note" data-save-note aria-live="polite"></span></div>
+            <div class="fc-settings-footer"><button class="fc-button fc-primary cursor-interaction" type="button" data-action="save" disabled>保存设置</button><span class="fc-save-note" data-save-note aria-live="polite"></span></div>
           </div>
         </section>
 

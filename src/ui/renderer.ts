@@ -11,11 +11,24 @@ if (navigator.platform.startsWith('Mac')) document.documentElement.classList.add
 let snapshot: DesktopSnapshot | undefined;
 let busy = false;
 let models: CodexModel[] = [];
+let savedForm = '';
+let noteTimer: ReturnType<typeof setTimeout> | undefined;
 
 function find<T extends Element>(selector: string): T {
   const element = root.querySelector<T>(selector);
   if (!element) throw new Error(`Missing UI element: ${selector}`);
   return element;
+}
+
+function formSignature(): string {
+  const controls = find<HTMLElement>('[data-panel="settings"]')
+    .querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select');
+  return JSON.stringify([...controls].map((control) => control instanceof HTMLInputElement && control.type === 'checkbox'
+    ? control.checked : control.value));
+}
+
+function refreshSaveState(): void {
+  find<HTMLButtonElement>('[data-action="save"]').disabled = busy || !snapshot || formSignature() === savedForm;
 }
 
 function showPage(page: string): void {
@@ -93,6 +106,7 @@ async function loadModels(): Promise<void> {
   } catch (error) {
     help.textContent = error instanceof Error ? `模型读取失败：${error.message}` : '模型读取失败，请重试';
   }
+  refreshSaveState();
 }
 
 function render(next: DesktopSnapshot): void {
@@ -114,6 +128,7 @@ function render(next: DesktopSnapshot): void {
   find<HTMLButtonElement>('[data-action="stop"]').disabled = busy || state === 'stopped' || state === 'stopping' || state === 'error';
   renderLogs(find('[data-recent-logs]'), next.logs.slice(0, 3));
   renderLogs(find('[data-full-logs]'), next.logs);
+  refreshSaveState();
 }
 
 function populateSettings(next: DesktopSnapshot): void {
@@ -128,6 +143,8 @@ function populateSettings(next: DesktopSnapshot): void {
   find<HTMLInputElement>('#fc-group-mention').checked = next.settings.allowGroupMentions;
   find<HTMLInputElement>('#fc-login-start').checked = next.settings.launchAtLogin;
   find<HTMLInputElement>('#fc-auto-connect').checked = next.settings.autoConnect;
+  savedForm = formSignature();
+  refreshSaveState();
 }
 
 function splitLines(value: string): string[] {
@@ -159,9 +176,11 @@ function readSettings(): SettingsInput {
 }
 
 function note(message: string, error = false): void {
+  if (noteTimer) clearTimeout(noteTimer);
   const element = find<HTMLElement>('[data-save-note]');
   element.textContent = message;
   element.style.color = error ? 'var(--fc-red)' : 'var(--fc-green)';
+  noteTimer = message && !error ? setTimeout(() => { element.textContent = ''; noteTimer = undefined; }, 2500) : undefined;
 }
 
 async function action(work: () => Promise<DesktopSnapshot>): Promise<void> {
@@ -186,10 +205,17 @@ find<HTMLSelectElement>('#fc-model').addEventListener('change', () => {
   const model = models.find((item) => item.id === find<HTMLSelectElement>('#fc-model').value);
   renderEfforts(model?.defaultReasoningEffort || model?.reasoningEfforts[0]?.reasoningEffort || '');
 });
+for (const event of ['input', 'change']) {
+  find<HTMLElement>('[data-panel="settings"]').addEventListener(event, () => {
+    note('');
+    refreshSaveState();
+  });
+}
 find<HTMLButtonElement>('[data-action="refresh-models"]').addEventListener('click', () => void loadModels());
 find<HTMLButtonElement>('[data-action="start"]').addEventListener('click', () => action(() => desktop.start()));
 find<HTMLButtonElement>('[data-action="stop"]').addEventListener('click', () => action(() => desktop.stop()));
 find<HTMLButtonElement>('[data-action="save"]').addEventListener('click', () => action(async () => {
+  note('');
   const result = await desktop.saveSettings(readSettings());
   populateSettings(result);
   note('设置已保存');
