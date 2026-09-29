@@ -33,6 +33,7 @@ test('运行卡片显示最新摘要、当前步骤、完整执行过程和停�
     ],
     version: 7,
   });
+  assert.equal(card.config.width_mode, 'fill');
   const elements = card.body.elements;
 
   assert.equal(elements[0].content, '> 请检查并更新配置');
