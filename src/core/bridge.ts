@@ -7,6 +7,7 @@ import type { BridgeLog, BridgeSettings, BridgeStatus, CardAction, CardSnapshot,
 
 type Prompt = { kind: 'question'; value: CodexQuestion } | { kind: 'approval'; value: CodexApproval };
 type ProgressStep = { title: string; detail?: string };
+type QueuedMessage = { message: IncomingMessage; settings: BridgeSettings; sessionGeneration: number };
 
 const PROGRESS_INTERVAL_MS = 2_500;
 
@@ -51,7 +52,7 @@ export class Bridge {
   private readonly store: RouteStore;
   private state: BridgeStatus['state'] = 'stopped';
   private lastError?: string;
-  private queues = new Map<string, IncomingMessage[]>();
+  private queues = new Map<string, QueuedMessage[]>();
   private workers = new Set<string>();
   private active = new Map<string, ActiveMessage>();
   private cards = new Map<string, ActiveMessage>();
@@ -132,10 +133,17 @@ export class Bridge {
   }
 
   async updateSettings(settings: BridgeSettings): Promise<void> {
+    const modelChanged = this.settings.model !== settings.model;
     this.settings = settings;
+    if (modelChanged) await this.requestNewSession('模型已切换');
     await this.options.lark.updateSettings?.(settings);
     this.options.log('INFO', `Bridge model ${settings.model}, effort ${settings.effort}, idle timeout ${settings.sessionTimeoutHours}h`);
     this.report();
+  }
+
+  async requestNewSession(reason?: string): Promise<void> {
+    await this.store.requestNewSession();
+    this.options.log('INFO', `Next Feishu message in each route will start a new Codex session${reason ? ` (${reason})` : ''}`);
   }
 
   private async onMessage(message: IncomingMessage): Promise<void> {
@@ -164,7 +172,7 @@ export class Bridge {
       return;
     }
     const queue = this.queues.get(route) ?? [];
-    queue.push(message);
+    queue.push({ message, settings: this.settings, sessionGeneration: this.store.getSessionGeneration() });
     this.queues.set(route, queue);
     this.options.log('INFO', 'Message accepted and queued');
     this.report();
@@ -175,11 +183,12 @@ export class Bridge {
     this.workers.add(route);
     try {
       while (generation === this.generation && this.state !== 'stopped' && this.state !== 'stopping') {
-        const message = this.queues.get(route)?.shift();
-        if (!message) break;
+        const queued = this.queues.get(route)?.shift();
+        if (!queued) break;
+        const { message } = queued;
         this.report();
         try {
-          await this.processMessage(route, message, generation);
+          await this.processMessage(route, queued, generation);
         } catch (error) {
           this.options.log('ERROR', `Message processing failed: ${(error as Error).message}`);
           const active = this.active.get(route);
@@ -204,8 +213,8 @@ export class Bridge {
     }
   }
 
-  private async processMessage(route: string, message: IncomingMessage, generation: number): Promise<void> {
-    const settings = this.settings;
+  private async processMessage(route: string, queued: QueuedMessage, generation: number): Promise<void> {
+    const { message, settings, sessionGeneration } = queued;
     const prompt = message.text || message.attachments.map((item) => item.name || item.path).join('、') || '附件';
     const snapshot: CardSnapshot = {
       sessionId: message.messageId,
@@ -239,8 +248,10 @@ export class Bridge {
     try {
       const stored = this.store.getThread(message.chatId, message.senderOpenId);
       const expired = stored && Date.now() - stored.lastActiveAt >= settings.sessionTimeoutHours * 3_600_000;
-      let threadId = expired ? undefined : stored?.threadId;
+      const changedSession = stored && (stored.sessionGeneration ?? 0) !== sessionGeneration;
+      let threadId = expired || changedSession ? undefined : stored?.threadId;
       if (expired) this.options.log('INFO', `Codex session idle for ${settings.sessionTimeoutHours} hours; creating a new thread`);
+      else if (changedSession) this.options.log('INFO', 'Codex session change requested; creating a new thread');
       if (threadId) {
         try {
           await this.options.codex.resumeThread(threadId, settings.workingDirectory, settings.model, settings.effort);
@@ -251,7 +262,8 @@ export class Bridge {
       }
       if (!threadId) {
         threadId = await this.options.codex.startThread(settings.workingDirectory, settings.model, settings.effort);
-        await this.store.setThread(message.chatId, message.senderOpenId, threadId);
+        if (active.stopRequested || generation !== this.generation) return;
+        await this.store.setThread(message.chatId, message.senderOpenId, threadId, sessionGeneration);
       }
       active.threadId = threadId;
       if (active.stopRequested || generation !== this.generation) return;

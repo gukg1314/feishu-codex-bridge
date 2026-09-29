@@ -5,6 +5,7 @@ import { spawn } from 'node:child_process';
 import { Bridge } from '../core/bridge';
 import { CodexClient } from '../core/codex';
 import { LarkCliTransport } from '../core/lark';
+import { RouteStore } from '../core/routes';
 import type { BridgeSettings, BridgeStatus } from '../core/types';
 import type { DesktopSnapshot, LogEntry, SettingsInput } from './protocol';
 import { defaultSettings, loadSettings, saveSettings, validateSettings, type SavedSettings } from './settings';
@@ -142,6 +143,17 @@ async function stopBridge(): Promise<void> {
   publish();
 }
 
+async function requestNewSession(reason: string): Promise<void> {
+  if (bridge && status.state === 'running') {
+    await bridge.requestNewSession(reason);
+  } else {
+    const store = new RouteStore(dataPath('state'));
+    await store.load();
+    await store.requestNewSession();
+    recordLog('INFO', `已安排新会话（${reason}）：每个聊天的下一条飞书指令将新建 Codex 会话`);
+  }
+}
+
 async function configureCredentials(appId: string, appSecret: string): Promise<void> {
   const child = spawn(binaryPath('lark-cli'), [
     'config', 'init', '--name', profile, '--app-id', appId,
@@ -171,16 +183,18 @@ async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
   if (secretChanged) await configureCredentials(next.appId, input.appSecret);
   const previous = saved.settings;
   const wasRunning = status.state === 'running';
-  saved = { settings: next, credentialsConfigured: saved.credentialsConfigured || secretChanged };
-  await saveSettings(dataPath('settings.json'), saved);
-  applyLoginItem(next);
-  recordLog('INFO', '设置已更新 · 敏感字段已脱敏');
-
+  const modelChanged = previous.model !== next.model;
   const connectionChanged = secretChanged || previous.appId !== next.appId ||
     previous.workingDirectory !== next.workingDirectory ||
     previous.allowGroupMentions !== next.allowGroupMentions ||
     JSON.stringify(previous.allowedOpenIds) !== JSON.stringify(next.allowedOpenIds) ||
     JSON.stringify(previous.allowedChatIds) !== JSON.stringify(next.allowedChatIds);
+  if (modelChanged && (!wasRunning || connectionChanged)) await requestNewSession('模型切换');
+  saved = { settings: next, credentialsConfigured: saved.credentialsConfigured || secretChanged };
+  await saveSettings(dataPath('settings.json'), saved);
+  applyLoginItem(next);
+  recordLog('INFO', '设置已更新 · 敏感字段已脱敏');
+
   if (wasRunning && connectionChanged) {
     await stopBridge();
     await startBridge();
@@ -237,6 +251,7 @@ function updateTray(): void {
 
 function createWindow(): void {
   const nativeMacTitleBar = process.platform === 'darwin';
+  const windowIcon = process.platform === 'win32' ? 'macdock.png' : 'main.png';
   const wasOpenedAtLogin = app.getLoginItemSettings().wasOpenedAtLogin;
   const showImmediately = shouldShowOnStartup(process.platform, wasOpenedAtLogin);
   window = new BrowserWindow({
@@ -244,8 +259,8 @@ function createWindow(): void {
     frame: nativeMacTitleBar, titleBarStyle: nativeMacTitleBar ? 'hiddenInset' : undefined,
     show: showImmediately, backgroundColor: '#ffffff',
     icon: app.isPackaged
-      ? path.join(process.resourcesPath, 'main.png')
-      : path.resolve(__dirname, '../../icon/main.png'),
+      ? path.join(process.resourcesPath, windowIcon)
+      : path.resolve(__dirname, `../../icon/${windowIcon}`),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, nodeIntegration: false
@@ -266,8 +281,8 @@ function createWindow(): void {
 function createTray(): void {
   const windows = process.platform === 'win32';
   const iconPath = app.isPackaged
-    ? path.join(process.resourcesPath, windows ? 'main.png' : 'bar.png')
-    : path.resolve(__dirname, windows ? '../../icon/main.png' : '../../icon/bar.png');
+    ? path.join(process.resourcesPath, windows ? 'macdock.png' : 'bar.png')
+    : path.resolve(__dirname, windows ? '../../icon/macdock.png' : '../../icon/bar.png');
   const source = nativeImage.createFromPath(iconPath);
   const icon = windows
     ? source.resize({ width: 32, height: 32 })
@@ -307,6 +322,7 @@ void app.whenReady().then(async () => {
   ipcMain.handle('bridge:save-settings', (_event, input: SettingsInput) => serialize(() => updateSettings(input)));
   ipcMain.handle('bridge:start', () => serialize(async () => { await startBridge(); return snapshot(); }));
   ipcMain.handle('bridge:stop', () => serialize(async () => { await stopBridge(); return snapshot(); }));
+  ipcMain.handle('bridge:new-session', () => serialize(async () => { await requestNewSession('手动点击'); return snapshot(); }));
   ipcMain.handle('bridge:window-action', (_event, action: string) => {
     if (action === 'close') return requestWindowClose();
     else if (action === 'minimize') window?.minimize();

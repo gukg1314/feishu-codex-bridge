@@ -22,6 +22,7 @@ export type DesktopApi = {
   saveSettings(settings: SettingsInput): Promise<DesktopSnapshot>;
   start(): Promise<DesktopSnapshot>;
   stop(): Promise<DesktopSnapshot>;
+  newSession(): Promise<DesktopSnapshot>;
   windowAction(action: 'close' | 'minimize' | 'maximize'): Promise<void>;
   onSnapshot(listener: (snapshot: DesktopSnapshot) => void): () => void;
 };

@@ -143,3 +143,34 @@ test('旧字符串路线迁移为带最后活跃时间的路线记录', async (t
   const saved = JSON.parse(await readFile(file, 'utf8'));
   assert.deepEqual(saved.routes[routeKey], { threadId: 'legacy-thread', lastActiveAt: migratedAt });
 });
+
+test('全局新会话请求持久化，原路线和去重记录保留', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-route-reset-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, 'bridge-routes.json');
+  const firstKey = JSON.stringify(['oc_first', 'ou_owner']);
+  const secondKey = JSON.stringify(['oc_second', 'ou_owner']);
+  await writeFile(file, JSON.stringify({
+    routes: {
+      [firstKey]: { threadId: 'first-thread', lastActiveAt: Date.now() },
+      [secondKey]: { threadId: 'second-thread', lastActiveAt: Date.now() },
+    },
+    seen: ['om_seen'],
+  }));
+
+  const store = new RouteStore(directory);
+  await store.load();
+  await store.requestNewSession();
+  const reloaded = new RouteStore(directory);
+  await reloaded.load();
+  assert.equal(reloaded.getSessionGeneration(), 1);
+  assert.equal(reloaded.getThread('oc_first', 'ou_owner').threadId, 'first-thread');
+  assert.equal(reloaded.getThread('oc_second', 'ou_owner').threadId, 'second-thread');
+  assert.equal(reloaded.hasSeen('om_seen'), true);
+
+  await reloaded.setThread('oc_first', 'ou_owner', 'new-first-thread');
+  const saved = JSON.parse(await readFile(file, 'utf8'));
+  assert.equal(saved.routes[firstKey].sessionGeneration, 1);
+  assert.equal(saved.routes[secondKey].threadId, 'second-thread');
+  assert.deepEqual(saved.seen, ['om_seen']);
+});

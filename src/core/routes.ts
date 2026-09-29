@@ -2,15 +2,16 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 interface RouteData {
-  routes: Record<string, { threadId: string; lastActiveAt: number }>;
+  routes: Record<string, { threadId: string; lastActiveAt: number; sessionGeneration?: number }>;
   seen: string[];
+  sessionGeneration: number;
 }
 
 const MAX_SEEN = 2000;
 
 export class RouteStore {
   private readonly file: string;
-  private data: RouteData = { routes: {}, seen: [] };
+  private data: RouteData = { routes: {}, seen: [], sessionGeneration: 0 };
   private seen = new Set<string>();
   private saving = Promise.resolve();
 
@@ -20,7 +21,7 @@ export class RouteStore {
 
   async load(): Promise<void> {
     try {
-      const value = JSON.parse(await readFile(this.file, 'utf8')) as { routes?: Record<string, string | { threadId: string; lastActiveAt: number }>; seen?: string[] };
+      const value = JSON.parse(await readFile(this.file, 'utf8')) as { routes?: Record<string, string | { threadId: string; lastActiveAt: number; sessionGeneration?: number }>; seen?: string[]; sessionGeneration?: number };
       const routes = Object.entries(value.routes ?? {});
       const migratedAt = Date.now();
       this.data = {
@@ -28,6 +29,7 @@ export class RouteStore {
           ? { threadId: route, lastActiveAt: migratedAt }
           : route])),
         seen: Array.isArray(value.seen) ? value.seen.slice(-MAX_SEEN) : [],
+        sessionGeneration: value.sessionGeneration ?? 0,
       };
       this.seen = new Set(this.data.seen);
       if (routes.some(([, route]) => typeof route === 'string')) await this.save();
@@ -36,12 +38,21 @@ export class RouteStore {
     }
   }
 
-  getThread(chatId: string, senderOpenId: string): { threadId: string; lastActiveAt: number } | undefined {
+  getSessionGeneration(): number {
+    return this.data.sessionGeneration;
+  }
+
+  getThread(chatId: string, senderOpenId: string): { threadId: string; lastActiveAt: number; sessionGeneration?: number } | undefined {
     return this.data.routes[JSON.stringify([chatId, senderOpenId])];
   }
 
-  async setThread(chatId: string, senderOpenId: string, threadId: string): Promise<void> {
-    this.data.routes[JSON.stringify([chatId, senderOpenId])] = { threadId, lastActiveAt: Date.now() };
+  async setThread(chatId: string, senderOpenId: string, threadId: string, sessionGeneration = this.data.sessionGeneration): Promise<void> {
+    this.data.routes[JSON.stringify([chatId, senderOpenId])] = { threadId, lastActiveAt: Date.now(), sessionGeneration };
+    await this.save();
+  }
+
+  async requestNewSession(): Promise<void> {
+    this.data.sessionGeneration++;
     await this.save();
   }
 

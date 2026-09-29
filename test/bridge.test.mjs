@@ -146,6 +146,107 @@ test('模型参数贯穿新建线程、恢复线程与 turn', async (t) => {
   await waitFor(() => lark.cards[1].snapshot.status === 'completed');
 });
 
+test('模型从 A 切到 B 再切回 A，下一条消息仍新建会话', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_model_a'));
+  await waitFor(() => codex.turns.length === 1);
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[0].snapshot.status === 'completed');
+
+  await bridge.updateSettings({ ...settings, model: 'gpt-6-astra' });
+  await bridge.updateSettings({ ...settings, model: 'gpt-6-sol' });
+  await lark.emitMessage(message('om_model_a_again'));
+  await waitFor(() => codex.turns.length === 2);
+  assert.equal(codex.startedThreads.length, 2);
+  assert.equal(codex.resumedThreads.length, 0);
+  assert.equal(codex.turns[1].threadId, 'thread_2');
+  assert.equal(codex.turns[1].model, 'gpt-6-sol');
+  codex.turns[1].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[1].snapshot.status === 'completed');
+});
+
+test('请求新会话不打断活动任务，只让请求之后收到的消息换会话', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_active'));
+  await waitFor(() => codex.turns.length === 1);
+  await lark.emitMessage(message('om_queued_before'));
+  await bridge.requestNewSession('手动');
+  await lark.emitMessage(message('om_queued_after'));
+  assert.equal(codex.interrupted.length, 0);
+
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => codex.turns.length === 2);
+  assert.equal(codex.turns[1].threadId, 'thread_1');
+  codex.turns[1].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => codex.turns.length === 3);
+  assert.equal(codex.turns[2].threadId, 'thread_2');
+  assert.equal(codex.startedThreads.length, 2);
+  codex.turns[2].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[2].snapshot.status === 'completed');
+
+  await lark.emitMessage(message('om_reuse_new'));
+  await waitFor(() => codex.turns.length === 4);
+  assert.equal(codex.turns[3].threadId, 'thread_2');
+  assert.equal(codex.startedThreads.length, 2);
+  codex.turns[3].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[3].snapshot.status === 'completed');
+});
+
+test('请求新会话后重启桥接，下一条消息新建且已读消息仍去重', async (t) => {
+  const routeKey = JSON.stringify(['oc_allowed', 'ou_owner']);
+  const { bridge, lark, codex } = await harness(t, {
+    routeData: {
+      routes: { [routeKey]: { threadId: 'old_thread', lastActiveAt: Date.now() } },
+      seen: ['om_seen_before'],
+    },
+  });
+  await bridge.requestNewSession('手动');
+  await bridge.stop();
+  await bridge.start();
+  await lark.emitMessage(message('om_seen_before'));
+  assert.equal(lark.cards.length, 0);
+  await lark.emitMessage(message('om_after_restart'));
+  await waitFor(() => codex.turns.length === 1);
+  assert.equal(codex.resumedThreads.length, 0);
+  assert.equal(codex.turns[0].threadId, 'thread_1');
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards[0].snapshot.status === 'completed');
+});
+
+test('一次新会话请求让两个已有聊天分别换会话，之后各自复用', async (t) => {
+  const groupKey = JSON.stringify(['oc_allowed', 'ou_owner']);
+  const privateKey = JSON.stringify(['oc_private', 'ou_owner']);
+  const { bridge, lark, codex } = await harness(t, {
+    routeData: {
+      routes: {
+        [groupKey]: { threadId: 'old_group', lastActiveAt: Date.now() },
+        [privateKey]: { threadId: 'old_private', lastActiveAt: Date.now() },
+      },
+      seen: [],
+    },
+  });
+  await bridge.requestNewSession('手动');
+  await lark.emitMessage(message('om_group_new', { text: '群聊第一条' }));
+  await lark.emitMessage(message('om_private_new', { chatId: 'oc_private', chatType: 'p2p', text: '私聊第一条' }));
+  await waitFor(() => codex.turns.length === 2);
+  assert.equal(codex.startedThreads.length, 2);
+  assert.equal(codex.resumedThreads.length, 0);
+  const groupThread = codex.turns.find((turn) => turn.text.includes('群聊第一条')).threadId;
+  const privateThread = codex.turns.find((turn) => turn.text.includes('私聊第一条')).threadId;
+  assert.notEqual(groupThread, privateThread);
+  for (const turn of codex.turns) turn.complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards.length === 2 && lark.cards.every((card) => card.snapshot.status === 'completed'));
+
+  await lark.emitMessage(message('om_group_reuse', { text: '群聊第二条' }));
+  await lark.emitMessage(message('om_private_reuse', { chatId: 'oc_private', chatType: 'p2p', text: '私聊第二条' }));
+  await waitFor(() => codex.turns.length === 4);
+  assert.equal(codex.startedThreads.length, 2);
+  assert.equal(codex.turns.find((turn) => turn.text.includes('群聊第二条')).threadId, groupThread);
+  assert.equal(codex.turns.find((turn) => turn.text.includes('私聊第二条')).threadId, privateThread);
+  for (const turn of codex.turns.slice(2)) turn.complete({ status: 'completed', text: '完成' });
+  await waitFor(() => lark.cards.length === 4 && lark.cards.every((card) => card.snapshot.status === 'completed'));
+});
+
 test('超时的已保存会话会新建线程', async (t) => {
   const routeKey = JSON.stringify(['oc_allowed', 'ou_owner']);
   const lastActiveAt = Date.now() - 25 * 60 * 60 * 1000;

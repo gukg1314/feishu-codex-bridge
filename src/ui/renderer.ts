@@ -8,6 +8,7 @@ declare global {
 const root = document.getElementById('fc-bridge-demo') as HTMLElement;
 const desktop = window.bridgeDesktop;
 if (navigator.platform.startsWith('Mac')) document.documentElement.classList.add('fc-native-mac');
+if (navigator.platform.startsWith('Win')) document.documentElement.classList.add('fc-native-win');
 let snapshot: DesktopSnapshot | undefined;
 let busy = false;
 let models: CodexModel[] = [];
@@ -126,6 +127,7 @@ function render(next: DesktopSnapshot): void {
   find<HTMLElement>('[data-codex-state]').textContent = running ? '已就绪' : state === 'starting' ? '启动中' : '未启动';
   find<HTMLButtonElement>('[data-action="start"]').disabled = busy || running || state === 'starting' || state === 'stopping';
   find<HTMLButtonElement>('[data-action="stop"]').disabled = busy || state === 'stopped' || state === 'stopping' || state === 'error';
+  find<HTMLButtonElement>('[data-action="new-session"]').disabled = busy || state === 'starting' || state === 'stopping';
   renderLogs(find('[data-recent-logs]'), next.logs.slice(0, 3));
   renderLogs(find('[data-full-logs]'), next.logs);
   refreshSaveState();
@@ -214,6 +216,25 @@ for (const event of ['input', 'change']) {
 find<HTMLButtonElement>('[data-action="refresh-models"]').addEventListener('click', () => void loadModels());
 find<HTMLButtonElement>('[data-action="start"]').addEventListener('click', () => action(() => desktop.start()));
 find<HTMLButtonElement>('[data-action="stop"]').addEventListener('click', () => action(() => desktop.stop()));
+find<HTMLButtonElement>('[data-action="new-session"]').addEventListener('click', () => {
+  if (busy) return;
+  void (async () => {
+    busy = true;
+    if (snapshot) render(snapshot);
+    const feedback = find<HTMLElement>('[data-session-note]');
+    try {
+      render(await desktop.newSession());
+      feedback.textContent = '已安排：每个聊天的下一条飞书指令将使用新会话。';
+      feedback.style.color = '';
+    } catch (error) {
+      feedback.textContent = error instanceof Error ? `新建会话失败：${error.message}` : '新建会话失败，请查看日志';
+      feedback.style.color = 'var(--fc-red)';
+    } finally {
+      busy = false;
+      if (snapshot) render(snapshot);
+    }
+  })();
+});
 find<HTMLButtonElement>('[data-action="save"]').addEventListener('click', () => action(async () => {
   note('');
   const result = await desktop.saveSettings(readSettings());

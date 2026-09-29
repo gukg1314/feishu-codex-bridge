@@ -49,7 +49,8 @@
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
       "artifactName": "飞书桥接Codex-${version}-win-x64.${ext}",
-      "signAndEditExecutable": false
+      "icon": "icon/macdock.png",
+      "extraResources": [{ "from": "icon/macdock.png", "to": "macdock.png" }]
     },
     "nsis": {
       "oneClick": false,

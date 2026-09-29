@@ -71,9 +71,23 @@
     #fc-bridge-demo .fc-traffic button:nth-child(2) { background: #febc2e; }
     #fc-bridge-demo .fc-traffic button:nth-child(3) { background: #28c840; }
     #fc-bridge-demo .fc-traffic button:hover { filter: brightness(.82); }
+    #fc-bridge-demo .fc-win-controls { display: none; align-self: stretch; flex: none; -webkit-app-region: no-drag; }
+    #fc-bridge-demo .fc-win-controls button {
+      appearance: none; width: 46px; height: 100%; border: 0; border-radius: 0;
+      background: transparent; color: var(--fc-text); display: grid; place-items: center;
+      padding: 0; cursor: pointer;
+    }
+    #fc-bridge-demo .fc-win-controls button:hover { background: light-dark(#e9ebef, #3c414a); }
+    #fc-bridge-demo .fc-win-controls button[data-window-action="close"]:hover { background: #e81123; color: #ffffff; }
+    #fc-bridge-demo .fc-win-controls button:focus-visible { outline: 2px solid var(--fc-primary); outline-offset: -3px; }
+    #fc-bridge-demo .fc-win-controls svg { width: 10px; height: 10px; }
     html.fc-native-mac #fc-bridge-demo .fc-window { border: 0; border-radius: 0; box-shadow: none; }
     html.fc-native-mac #fc-bridge-demo .fc-titlebar { padding-left: 86px; padding-bottom: 16px; }
     html.fc-native-mac #fc-bridge-demo .fc-traffic { display: none; }
+    html.fc-native-win #fc-bridge-demo .fc-titlebar { padding-right: 0; }
+    html.fc-native-win #fc-bridge-demo .fc-traffic { display: none; }
+    html.fc-native-win #fc-bridge-demo .fc-version { margin-left: auto; margin-right: 12px; }
+    html.fc-native-win #fc-bridge-demo .fc-win-controls { display: flex; }
     #fc-bridge-demo .fc-title { font-size: 13px; font-weight: 500; white-space: nowrap; }
     #fc-bridge-demo .fc-version { font-size: 12px; color: var(--fc-muted); }
     #fc-bridge-demo .fc-layout { display: grid; flex: 1; grid-template-columns: 194px minmax(0, 1fr); min-height: 0; }
@@ -126,6 +140,7 @@
     }
     #fc-bridge-demo[data-running="false"] .fc-status-pill { color: var(--fc-red); background: var(--fc-red-soft); }
     #fc-bridge-demo .fc-hero-copy { margin-top: 10px; color: var(--fc-muted); font-size: 13px; line-height: 1.6; }
+    #fc-bridge-demo [data-session-note]:empty { display: none; }
     #fc-bridge-demo .fc-actions { gap: 9px; margin-top: 23px; flex-wrap: wrap; }
     #fc-bridge-demo .fc-button {
       appearance: none; min-height: 34px; padding: 0 14px;
@@ -223,12 +238,17 @@
   </style>
 
   <div class="fc-window">
-    <div class="fc-titlebar" aria-label="macOS 窗口标题栏">
+    <div class="fc-titlebar" aria-label="窗口标题栏">
       <div class="fc-title-left">
         <div class="fc-traffic"><button type="button" aria-label="关闭窗口" data-window-action="close"></button><button type="button" aria-label="最小化窗口" data-window-action="minimize"></button><button type="button" aria-label="缩放窗口" data-window-action="maximize"></button></div>
         <span class="fc-title">飞书桥接Codex</span>
       </div>
       <span class="fc-version">v1.0.6</span>
+      <div class="fc-win-controls">
+        <button type="button" aria-label="最小化窗口" data-window-action="minimize"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" stroke="currentColor"/></svg></button>
+        <button type="button" aria-label="最大化窗口" data-window-action="maximize"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5h9v9h-9z" fill="none" stroke="currentColor"/></svg></button>
+        <button type="button" aria-label="关闭窗口" data-window-action="close"><svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9m0-9l-9 9" stroke="currentColor"/></svg></button>
+      </div>
     </div>
     <div class="fc-layout">
       <aside class="fc-sidebar">
@@ -255,7 +275,9 @@
             <div class="fc-actions">
               <button class="fc-button fc-primary cursor-interaction" type="button" data-action="start">启动桥接</button>
               <button class="fc-button cursor-interaction" type="button" data-action="stop" disabled>停止桥接</button>
+              <button class="fc-button cursor-interaction" type="button" data-action="new-session">新建会话</button>
             </div>
+            <p class="fc-hero-copy" data-session-note role="status"></p>
           </div>
 
           <div class="fc-grid" aria-label="服务状态">
@@ -300,7 +322,7 @@
             <div class="fc-settings-group">
               <h2 class="fc-group-head">Codex 处理</h2>
               <div class="fc-fields">
-                <div class="fc-field"><label for="fc-model">模型</label><select class="fc-input" id="fc-model"></select></div>
+                <div class="fc-field"><label for="fc-model">模型</label><select class="fc-input" id="fc-model"></select><span class="fc-help">保存模型切换后，每个聊天的下一条指令将使用新会话。</span></div>
                 <div class="fc-field"><label for="fc-effort">推理强度</label><select class="fc-input" id="fc-effort"></select></div>
                 <div class="fc-field"><label for="fc-session-timeout">会话空闲超时（小时）</label><input class="fc-input" id="fc-session-timeout" type="number" min="1" step="1"><span class="fc-help">默认 24 小时；超时后下一条消息会新建会话。</span></div>
                 <div class="fc-field"><span class="fc-help" data-model-help>正在读取 Codex 模型列表…</span><button class="fc-button cursor-interaction" type="button" data-action="refresh-models">刷新模型列表</button></div>

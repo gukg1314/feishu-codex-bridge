@@ -7,6 +7,7 @@ const api: DesktopApi = {
   saveSettings: (settings: SettingsInput) => ipcRenderer.invoke('bridge:save-settings', settings),
   start: () => ipcRenderer.invoke('bridge:start'),
   stop: () => ipcRenderer.invoke('bridge:stop'),
+  newSession: () => ipcRenderer.invoke('bridge:new-session'),
   windowAction: (action) => ipcRenderer.invoke('bridge:window-action', action),
   onSnapshot: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, snapshot: DesktopSnapshot) => listener(snapshot);
