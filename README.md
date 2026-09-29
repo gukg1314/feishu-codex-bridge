@@ -15,10 +15,9 @@ App Secret 通过 stdin 交给固定名称 `bridge` 的飞书 CLI profile，不�
 
 ## 构建
 
-在 macOS 上出包，需要 Node.js、npm、`curl` 和 `tar`。Apple 芯片还需安装原生 NSIS 编译器，用于生成 Windows EXE。先安装依赖，再双击项目根目录的 `一键打包.command`；命令行也可运行：
+在 macOS 上出包，需要 Node.js、npm、`curl` 和 `tar`。Apple 芯片还需安装 Rosetta 2（`softwareupdate --install-rosetta --agree-to-license`），用于运行 electron-builder 内置的 x86_64 `mac/makensis`；Windows EXE 使用这套完整的 NSIS 工具。先安装依赖，再双击项目根目录的 `一键打包.command`；命令行也可运行：
 
 ```sh
-brew install makensis
 npm ci
 npm run package:release
 ```

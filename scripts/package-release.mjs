@@ -1,13 +1,12 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
 const releaseRoot = path.join(root, 'release');
 const product = '飞书桥接Codex';
-const require = createRequire(import.meta.url);
+const nsisStartupRva = 0xCB000;
 
 export function nextPatchVersion(version) {
   const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
@@ -70,32 +69,51 @@ function runNode(script, args = [], env = process.env) {
   });
 }
 
-async function arm64NsisEnvironment(staging) {
-  const prefix = spawnSync('brew', ['--prefix', 'makensis'], { encoding: 'utf8' });
-  const nativeBinary = path.join(prefix.stdout?.trim() ?? '', 'bin/makensis');
-  if (prefix.status !== 0 || !(await stat(nativeBinary).catch(() => null))?.isFile()) {
-    throw new Error('此 Mac 缺少 arm64 makensis；请先运行 brew install makensis。');
+export function assertRosettaAvailable(run = spawnSync) {
+  const check = run('arch', ['-x86_64', '/usr/bin/true'], { stdio: 'ignore' });
+  if (check.status !== 0) {
+    throw new Error('Windows EXE 需要 Rosetta 2 才能运行 electron-builder 内置的 makensis；请先运行 softwareupdate --install-rosetta --agree-to-license。');
   }
-  const archs = spawnSync('lipo', ['-archs', nativeBinary], { encoding: 'utf8' });
-  if (archs.status !== 0 || !archs.stdout.split(/\s+/).includes('arm64')) {
-    throw new Error('Homebrew makensis 不是 arm64 版本。');
+}
+
+export async function validateNsisInstaller(file) {
+  const handle = await open(file, 'r');
+  let header;
+  try {
+    const bytes = Buffer.alloc(64 * 1024);
+    const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+    header = bytes.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
   }
-  const { getBinFromUrl } = require('app-builder-lib/out/binDownload.js');
-  const bundled = await getBinFromUrl(
-    'nsis-3.0.4.1',
-    'nsis-3.0.4.1.7z',
-    'VKMiizYdmNdJOWpRGz4trl4lD++BvYP2irAXpMilheUP0pc93iKlWAoP843Vlraj8YG19CVn0j+dCo/hURz9+Q=='
-  );
-  const local = path.join(staging, 'nsis');
-  await mkdir(path.join(local, 'mac'), { recursive: true });
-  for (const entry of await readdir(bundled, { withFileTypes: true })) {
-    if (entry.name !== 'mac') {
-      await symlink(path.join(bundled, entry.name), path.join(local, entry.name), entry.isDirectory() ? 'dir' : 'file');
-    }
+
+  if (header.length < 64 || header.toString('ascii', 0, 2) !== 'MZ') {
+    throw new Error('Windows NSIS 安装包 PE 头无效');
   }
-  await symlink(nativeBinary, path.join(local, 'mac/makensis'));
-  console.log('[打包] Windows EXE 使用 arm64 makensis');
-  return { ...process.env, ELECTRON_BUILDER_NSIS_DIR: local };
+  const peOffset = header.readUInt32LE(0x3c);
+  if (peOffset + 24 > header.length || header.toString('ascii', peOffset, peOffset + 4) !== 'PE\0\0') {
+    throw new Error('Windows NSIS 安装包 PE 头无效');
+  }
+  const sectionCount = header.readUInt16LE(peOffset + 6);
+  const optionalSize = header.readUInt16LE(peOffset + 20);
+  const optionalOffset = peOffset + 24;
+  const sectionOffset = optionalOffset + optionalSize;
+  if (optionalSize < 60 || sectionOffset + sectionCount * 40 > header.length) {
+    throw new Error('Windows NSIS 安装包 PE 头无效');
+  }
+  const imageSize = header.readUInt32LE(optionalOffset + 56);
+  let ndataStart = -1;
+  let ndataEnd = -1;
+  for (let i = 0; i < sectionCount; i += 1) {
+    const offset = sectionOffset + i * 40;
+    if (header.toString('ascii', offset, offset + 8).replace(/\0+$/, '') !== '.ndata') continue;
+    ndataStart = header.readUInt32LE(offset + 12);
+    ndataEnd = ndataStart + header.readUInt32LE(offset + 8);
+    break;
+  }
+  if (ndataStart > nsisStartupRva || ndataEnd <= nsisStartupRva || imageSize <= nsisStartupRva) {
+    throw new Error(`Windows NSIS 安装包 PE 校验失败：.ndata 结束于 0x${ndataEnd.toString(16)}，SizeOfImage=0x${imageSize.toString(16)}，必须覆盖 RVA 0x${nsisStartupRva.toString(16)}`);
+  }
 }
 
 export async function packageRelease() {
@@ -108,6 +126,7 @@ export async function packageRelease() {
   if (packageInfo.version !== lockInfo.version || lockInfo.packages[''].version !== packageInfo.version) {
     throw new Error('package.json 与 package-lock.json 版本不一致');
   }
+  assertRosettaAvailable();
   const version = nextPatchVersion(packageInfo.version);
   await mkdir(releaseRoot, { recursive: true });
   await removeLegacyUnpackedDirs(releaseRoot);
@@ -117,7 +136,8 @@ export async function packageRelease() {
   let versionWriteStarted = false;
   try {
     console.log(`[打包] 准备 ${version}，先生成 Mac DMG 与 Windows EXE`);
-    const windowsEnvironment = process.arch === 'arm64' ? await arm64NsisEnvironment(staging) : process.env;
+    const windowsEnvironment = { ...process.env };
+    delete windowsEnvironment.ELECTRON_BUILDER_NSIS_DIR;
     await runNode('scripts/build.mjs');
     await mkdir(output);
     for (const [target, builderArgs, artifact] of [
@@ -133,6 +153,10 @@ export async function packageRelease() {
         `--config.extraMetadata.version=${version}`,
         `--config.directories.output=${builderOutput}`
       ], target === 'win32-x64' ? windowsEnvironment : process.env);
+      if (target === 'win32-x64') {
+        await validateNsisInstaller(path.join(builderOutput, artifact));
+        console.log('[打包] Windows EXE PE 校验通过：.ndata 与 SizeOfImage 覆盖 NSIS 启动 RVA');
+      }
       await rename(path.join(builderOutput, artifact), path.join(output, artifact));
     }
     const files = await publishArtifacts(output, releaseRoot, version);

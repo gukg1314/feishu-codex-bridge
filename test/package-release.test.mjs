@@ -3,7 +3,23 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import test from 'node:test';
-import { artifactNames, nextPatchVersion, publishArtifacts, removeLegacyUnpackedDirs, replaceVersionFields } from '../scripts/package-release.mjs';
+import { artifactNames, assertRosettaAvailable, nextPatchVersion, publishArtifacts, removeLegacyUnpackedDirs, replaceVersionFields, validateNsisInstaller } from '../scripts/package-release.mjs';
+
+function nsisPe(ndataSize, imageSize) {
+  const bytes = Buffer.alloc(512);
+  bytes.write('MZ');
+  bytes.writeUInt32LE(0x80, 0x3c);
+  bytes.write('PE\0\0', 0x80);
+  bytes.writeUInt16LE(1, 0x80 + 6);
+  bytes.writeUInt16LE(0xe0, 0x80 + 20);
+  bytes.writeUInt16LE(0x10b, 0x80 + 24);
+  bytes.writeUInt32LE(imageSize, 0x80 + 24 + 56);
+  const section = 0x80 + 24 + 0xe0;
+  bytes.write('.ndata', section);
+  bytes.writeUInt32LE(ndataSize, section + 8);
+  bytes.writeUInt32LE(0x7b000, section + 12);
+  return bytes;
+}
 
 test('release uses the next patch version and expected DMG/Windows installer names', () => {
   assert.equal(nextPatchVersion('1.0.6'), '1.0.7');
@@ -24,6 +40,32 @@ test('Windows release uses a selectable NSIS installer', async () => {
   assert.equal(packageInfo.build.nsis.oneClick, false);
   assert.equal(packageInfo.build.nsis.allowToChangeInstallationDirectory, true);
   assert.match(releaseScript, /\['win32-x64',\s*\['--win',\s*'nsis',\s*'--x64'\]/);
+});
+
+test('release checks that Rosetta can run electron-builder makensis', () => {
+  let invocation;
+  assertRosettaAvailable((...args) => {
+    invocation = args;
+    return { status: 0 };
+  });
+  assert.deepEqual(invocation, ['arch', ['-x86_64', '/usr/bin/true'], { stdio: 'ignore' }]);
+  assert.throws(() => assertRosettaAvailable(() => ({ status: 1 })), /Rosetta 2/);
+});
+
+test('NSIS PE validation rejects the old truncated layout and accepts a covered startup RVA', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-nsis-pe-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const badSection = join(directory, 'bad-section.exe');
+  const badImage = join(directory, 'bad-image.exe');
+  const good = join(directory, 'good.exe');
+  await Promise.all([
+    writeFile(badSection, nsisPe(0x39000, 0xb9000)),
+    writeFile(badImage, nsisPe(0x1c4000, 0xb9000)),
+    writeFile(good, nsisPe(0x1c4000, 0x240000)),
+  ]);
+  await assert.rejects(validateNsisInstaller(badSection), /必须覆盖 RVA 0xcb000/i);
+  await assert.rejects(validateNsisInstaller(badImage), /必须覆盖 RVA 0xcb000/i);
+  await assert.doesNotReject(validateNsisInstaller(good));
 });
 
 test('release version writes preserve JSON formatting and leave later version fields alone', () => {
