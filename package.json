@@ -1,6 +1,6 @@
 {
   "name": "feishu-codex-bridge",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "description": "Feishu to Codex desktop bridge",
   "main": "dist/desktop/main.cjs",
