@@ -17,7 +17,7 @@ const built = buildSync({
 });
 const loaded = { exports: {} };
 new Function('require', 'module', 'exports', built.outputFiles[0].text)(require, loaded, loaded.exports);
-const { Bridge } = loaded.exports;
+const { Bridge, parseBridgeCommand } = loaded.exports;
 
 const settings = {
   appId: 'cli_test',
@@ -49,6 +49,7 @@ async function waitFor(check, timeoutMs = 1_000) {
 
 class FakeLark {
   cards = [];
+  texts = [];
   images = [];
   files = [];
   reactions = [];
@@ -62,7 +63,7 @@ class FakeLark {
     return id;
   }
   async updateCard(id, snapshot) { this.cards.find((card) => card.id === id).snapshot = snapshot; }
-  async sendText() {}
+  async sendText(chatId, text) { this.texts.push({ chatId, text }); }
   async sendImage(chatId, path) { this.images.push({ chatId, path }); }
   async sendFile(chatId, path) { this.files.push({ chatId, path }); }
   async addReaction(messageId, emojiType) {
@@ -76,6 +77,10 @@ class FakeLark {
 }
 
 class FakeCodex {
+  models = Array.from({ length: 7 }, (_, index) => ({
+    id: index === 0 ? 'gpt-6-sol' : `model-${index}`, displayName: `模型 ${index}`,
+    defaultReasoningEffort: 'high', reasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }],
+  }));
   turns = [];
   startedThreads = [];
   resumedThreads = [];
@@ -85,6 +90,7 @@ class FakeCodex {
 
   async start() {}
   async stop() {}
+  async listModels() { return this.models; }
   async startThread(cwd, model, effort) {
     const threadId = `thread_${this.startedThreads.length + 1}`;
     this.startedThreads.push({ threadId, cwd, model, effort });
@@ -111,6 +117,10 @@ async function harness(t, { routeData, settingsOverrides = {} } = {}) {
   const lark = new FakeLark();
   const codex = new FakeCodex();
   const bridge = new Bridge({ settings: { ...settings, ...settingsOverrides }, lark, codex, storageDir, log: () => {} });
+  bridge.options.onSettingsChange = async (patch, expectedModel) => {
+    if (expectedModel && expectedModel !== bridge.settings.model) throw new Error('模型已变化，请重新发送推理强度指令');
+    await bridge.updateSettings({ ...bridge.settings, ...patch });
+  };
   t.after(async () => {
     for (const turn of codex.turns) turn.complete({ status: 'interrupted', text: '' });
     await bridge.stop();
@@ -119,6 +129,150 @@ async function harness(t, { routeData, settingsOverrides = {} } = {}) {
   await bridge.start();
   return { bridge, lark, codex, storageDir };
 }
+
+function controlAction(card, action, value) {
+  return { cardMessageId: card.id, actorOpenId: 'ou_owner', action, value, version: card.snapshot.version };
+}
+
+test('飞书指令：所有别名与群聊 @ 格式，普通文字不误判', () => {
+  for (const [kind, aliases] of [
+    ['session', ['新建会话', '会话']], ['model', ['切换模型', '切模型', '换模型']],
+    ['effort', ['推理强度', '强度', '推理']], ['cancel', ['取消']],
+  ]) {
+    for (const alias of aliases) assert.equal(parseBridgeCommand(`  /${alias}  `), kind);
+  }
+  assert.equal(parseBridgeCommand('@_user_1 /会话'), 'session');
+  assert.equal(parseBridgeCommand('<at user_id="ou_bot">机器人</at> /推理'), 'effort');
+  assert.equal(parseBridgeCommand('请解释 /换模型'), undefined);
+});
+
+test('飞书指令：模型分页、强度匹配，换模型新建而换强度复用会话', async (t) => {
+  const { lark, codex, bridge } = await harness(t);
+  await lark.emitMessage(message('om_before_control'));
+  await waitFor(() => codex.turns.length === 1);
+  codex.turns[0].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => !bridge.workers.size);
+
+  await lark.emitMessage(message('om_switch_model', { text: '/切模型' }));
+  const modelCard = lark.cards.at(-1);
+  assert.equal(modelCard.snapshot.control.options.length, 6);
+  assert.equal(modelCard.snapshot.control.pages, 2);
+  await lark.emitAction(controlAction(modelCard, 'page', '1'));
+  assert.deepEqual(modelCard.snapshot.control.options.map((item) => item.value), ['model-6']);
+  await lark.emitAction(controlAction(modelCard, 'select', 'model-6'));
+  await lark.emitAction(controlAction(modelCard, 'select', 'model-6'));
+  assert.deepEqual([bridge.settings.model, bridge.settings.effort], ['model-6', 'high']);
+  assert.equal(bridge.store.getSessionGeneration(), 1);
+  await lark.emitMessage(message('om_after_model'));
+  await waitFor(() => codex.turns.length === 2);
+  assert.equal(codex.turns[1].threadId, 'thread_2');
+  codex.turns[1].complete({ status: 'completed', text: '完成' });
+  await waitFor(() => !bridge.workers.size);
+
+  await lark.emitMessage(message('om_switch_effort', { text: '/推理' }));
+  const effortCard = lark.cards.at(-1);
+  await lark.emitAction(controlAction(effortCard, 'select', 'low'));
+  assert.equal(bridge.store.getSessionGeneration(), 1);
+  await lark.emitMessage(message('om_after_effort'));
+  await waitFor(() => codex.turns.length === 3);
+  assert.deepEqual([codex.turns[2].threadId, codex.turns[2].effort], ['thread_2', 'low']);
+});
+
+test('飞书指令：新会话仅更换当前路线，创建期间的消息等待完成再执行', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+  await bridge.store.setThread('oc_other', 'ou_owner', 'other-thread');
+  await lark.emitMessage(message('om_new_session', { text: '/会话' }));
+  const card = lark.cards.at(-1);
+  let resolveThread;
+  codex.startThread = () => new Promise((resolvePromise) => { resolveThread = resolvePromise; });
+  const creating = lark.emitAction(controlAction(card, 'select', 'new_session'));
+  await waitFor(() => Boolean(resolveThread));
+  await lark.emitMessage(message('om_during_create'));
+  assert.equal(codex.turns.length, 0);
+  resolveThread('new-thread');
+  await creating;
+  await waitFor(() => codex.turns.length === 1);
+  assert.equal(codex.turns[0].threadId, 'new-thread');
+  assert.equal(bridge.store.getThread('oc_other', 'ou_owner').threadId, 'other-thread');
+  assert.equal(bridge.store.getSessionGeneration(), 0);
+  await lark.emitMessage(message('om_busy_session', { text: '/新建会话' }));
+  assert.match(lark.texts.at(-1).text, /还有执行或排队任务/);
+  assert.equal(bridge.controls.size, 0);
+});
+
+test('飞书指令：取消、普通消息、替换、过期和慢查询都能结束菜单', async (t) => {
+  const { bridge, lark, codex } = await harness(t);
+  await lark.emitMessage(message('om_menu_cancel', { text: '/换模型' }));
+  const cancelled = lark.cards.at(-1);
+  await lark.emitMessage(message('om_cancel', { text: '/取消' }));
+  await lark.emitAction(controlAction(cancelled, 'select', 'model-1'));
+  assert.equal(cancelled.snapshot.summary, '已取消');
+  assert.equal(bridge.settings.model, settings.model);
+
+  await lark.emitMessage(message('om_menu_regular', { text: '/强度' }));
+  const regular = lark.cards.at(-1);
+  await lark.emitMessage(message('om_regular_task'));
+  await waitFor(() => codex.turns.length === 1);
+  assert.equal(regular.snapshot.status, 'stopped');
+  assert.equal(codex.interrupted.length, 0);
+
+  let resolveModels;
+  codex.listModels = () => new Promise((resolvePromise) => { resolveModels = resolvePromise; });
+  const loading = lark.emitMessage(message('om_slow_menu', { text: '/切换模型' }));
+  await waitFor(() => Boolean(resolveModels));
+  await lark.emitMessage(message('om_slow_cancel', { text: '/取消' }));
+  const count = lark.cards.length;
+  resolveModels(codex.models);
+  await loading;
+  assert.equal(lark.cards.length, count);
+  codex.listModels = async () => codex.models;
+
+  await lark.emitMessage(message('om_replace_menu', { text: '/强度' }));
+  const replaced = lark.cards.at(-1);
+  await lark.emitMessage(message('om_replacing_menu', { text: '/换模型' }));
+  assert.equal(replaced.snapshot.status, 'stopped');
+  const expired = lark.cards.at(-1);
+  bridge.controls.values().next().value.expiresAt = 0;
+  await lark.emitAction(controlAction(expired, 'select', 'model-1'));
+  assert.match(expired.snapshot.summary, /过期/);
+  assert.equal(bridge.controls.size, 0);
+  assert.equal(codex.interrupted.length, 0);
+});
+
+test('飞书指令：模型已变或保存失败时结束菜单，不改错误设置', async (t) => {
+  const { bridge, lark } = await harness(t);
+  await lark.emitMessage(message('om_stale_effort', { text: '/强度' }));
+  const stale = lark.cards.at(-1);
+  await bridge.updateSettings({ ...settings, model: 'model-1' });
+  await lark.emitAction(controlAction(stale, 'select', 'low'));
+  assert.match(stale.snapshot.summary, /模型已变化/);
+  assert.equal(bridge.settings.effort, 'max');
+
+  bridge.options.onSettingsChange = async () => { throw new Error('保存失败'); };
+  await lark.emitMessage(message('om_failed_model', { text: '/换模型' }));
+  const failed = lark.cards.at(-1);
+  await lark.emitAction(controlAction(failed, 'select', 'model-2'));
+  assert.equal(failed.snapshot.status, 'failed');
+  assert.equal(bridge.settings.model, 'model-1');
+  assert.equal(bridge.controls.size, 0);
+});
+
+test('飞书指令：换模型标记写盘期间，收到的消息使用新模型和新代次', async (t) => {
+  const { bridge, lark } = await harness(t);
+  const save = bridge.store.save.bind(bridge.store);
+  let release;
+  bridge.store.save = () => new Promise((resolveSave) => { release = resolveSave; });
+  const switching = bridge.updateSettings({ ...settings, model: 'model-1' });
+  bridge.store.save = save;
+  const route = JSON.stringify(['oc_allowed', 'ou_owner']);
+  bridge.workers.add(route);
+  await lark.emitMessage(message('om_during_model_save'));
+  const queued = bridge.queues.get(route)[0];
+  assert.equal(queued.settings.model, 'model-1');
+  assert.equal(queued.sessionGeneration, 1);
+  release();
+  await switching;
+});
 
 test('模型参数贯穿新建线程、恢复线程与 turn', async (t) => {
   const { lark, codex } = await harness(t);

@@ -47,13 +47,30 @@ export class RouteStore {
   }
 
   async setThread(chatId: string, senderOpenId: string, threadId: string, sessionGeneration = this.data.sessionGeneration): Promise<void> {
-    this.data.routes[JSON.stringify([chatId, senderOpenId])] = { threadId, lastActiveAt: Date.now(), sessionGeneration };
-    await this.save();
+    const key = JSON.stringify([chatId, senderOpenId]);
+    const previous = this.data.routes[key];
+    const next = { threadId, lastActiveAt: Date.now(), sessionGeneration };
+    this.data.routes[key] = next;
+    try {
+      await this.save();
+    } catch (error) {
+      if (this.data.routes[key] === next) {
+        if (previous) this.data.routes[key] = previous;
+        else delete this.data.routes[key];
+      }
+      throw error;
+    }
   }
 
   async requestNewSession(): Promise<void> {
+    const previous = this.data.sessionGeneration;
     this.data.sessionGeneration++;
-    await this.save();
+    try {
+      await this.save();
+    } catch (error) {
+      if (this.data.sessionGeneration === previous + 1) this.data.sessionGeneration = previous;
+      throw error;
+    }
   }
 
   async touchThread(chatId: string, senderOpenId: string, threadId: string): Promise<void> {

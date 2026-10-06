@@ -1,7 +1,7 @@
 import { stat } from 'node:fs/promises';
 import { extname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { CodexApproval, CodexPort, CodexProgress, CodexQuestion, CodexTurnResult } from './codex.js';
+import type { CodexApproval, CodexModel, CodexPort, CodexProgress, CodexQuestion, CodexTurnResult } from './codex.js';
 import { RouteStore } from './routes.js';
 import type { BridgeLog, BridgeSettings, BridgeStatus, CardAction, CardSnapshot, IncomingMessage, LarkTransport } from './types.js';
 
@@ -10,6 +10,36 @@ type ProgressStep = { title: string; detail?: string };
 type QueuedMessage = { message: IncomingMessage; settings: BridgeSettings; sessionGeneration: number };
 
 const PROGRESS_INTERVAL_MS = 2_500;
+const CONTROL_TIMEOUT_MS = 5 * 60_000;
+const MODEL_PAGE_SIZE = 6;
+
+type Command = 'session' | 'model' | 'effort' | 'cancel';
+
+export function parseBridgeCommand(text: string): Command | undefined {
+  const command = text.replace(/@_user_\d+|<at\b[^>]*>[\s\S]*?<\/at>/g, '').trim();
+  const aliases: Record<string, Command> = {
+    '/新建会话': 'session', '/会话': 'session',
+    '/切换模型': 'model', '/切模型': 'model', '/换模型': 'model',
+    '/推理强度': 'effort', '/强度': 'effort', '/推理': 'effort',
+    '/取消': 'cancel',
+  };
+  return Object.hasOwn(aliases, command) ? aliases[command] : undefined;
+}
+
+interface ControlMenu {
+  route: string;
+  message: IncomingMessage;
+  kind: Exclude<Command, 'cancel'>;
+  cardMessageId?: string;
+  snapshot: CardSnapshot;
+  models: CodexModel[];
+  model: string;
+  page: number;
+  expiresAt: number;
+  timer?: ReturnType<typeof setTimeout>;
+  executing: boolean;
+  updates: Promise<void>;
+}
 
 function isChineseProgress(value: string): boolean {
   const prose = value
@@ -58,6 +88,8 @@ export class Bridge {
   private cards = new Map<string, ActiveMessage>();
   private inFlightIds = new Set<string>();
   private generation = 0;
+  private controls = new Map<string, ControlMenu>();
+  private controlCards = new Map<string, ControlMenu>();
 
   constructor(private readonly options: {
     settings: BridgeSettings;
@@ -66,6 +98,7 @@ export class Bridge {
     storageDir: string;
     log: BridgeLog;
     onStatus?: (status: BridgeStatus) => void;
+    onSettingsChange?: (patch: { model?: string; effort?: string }, expectedModel?: string) => Promise<void>;
   }) {
     this.settings = options.settings;
     this.store = new RouteStore(options.storageDir);
@@ -110,6 +143,7 @@ export class Bridge {
     if (this.state === 'stopped' || this.state === 'stopping') return;
     this.state = 'stopping';
     this.generation++;
+    await Promise.all([...this.controls.values()].map((menu) => this.closeControl(menu, '桥接已停止，操作已结束')));
     this.report();
     for (const active of this.active.values()) {
       active.stopRequested = true;
@@ -133,9 +167,15 @@ export class Bridge {
   }
 
   async updateSettings(settings: BridgeSettings): Promise<void> {
-    const modelChanged = this.settings.model !== settings.model;
+    const previous = this.settings;
+    const modelChanged = previous.model !== settings.model;
     this.settings = settings;
-    if (modelChanged) await this.requestNewSession('模型已切换');
+    try {
+      if (modelChanged) await this.requestNewSession('模型已切换');
+    } catch (error) {
+      this.settings = previous;
+      throw error;
+    }
     await this.options.lark.updateSettings?.(settings);
     this.options.log('INFO', `Bridge model ${settings.model}, effort ${settings.effort}, idle timeout ${settings.sessionTimeoutHours}h`);
     this.report();
@@ -159,6 +199,28 @@ export class Bridge {
     if (this.store.hasSeen(message.messageId) || this.inFlightIds.has(message.messageId)) return;
     this.inFlightIds.add(message.messageId);
     const route = JSON.stringify([message.chatId, message.senderOpenId]);
+    const command = message.attachments.length ? undefined : parseBridgeCommand(message.text);
+    if (command) {
+      try {
+        await this.store.markSeen(message.messageId);
+        const menu = this.controls.get(route);
+        if (menu?.executing) {
+          await this.options.lark.sendText(message.chatId, '操作已提交，正在处理，完成后会通知。');
+        } else if (command === 'cancel') {
+          if (menu) {
+            await this.closeControl(menu, '已取消');
+            if (!menu.cardMessageId) await this.options.lark.sendText(message.chatId, '已取消。');
+          } else await this.options.lark.sendText(message.chatId, '当前没有待取消的操作。');
+        } else {
+          await this.openControl(route, message, command);
+        }
+      } finally {
+        this.inFlightIds.delete(message.messageId);
+      }
+      return;
+    }
+    const menu = this.controls.get(route);
+    if (menu && !menu.executing) void this.closeControl(menu, '已退出菜单，继续处理消息');
     const active = this.active.get(route);
     if (active?.snapshot.status === 'question' && message.replyToMessageId === active.cardMessageId && active.prompts[0]?.kind === 'question') {
       try {
@@ -177,6 +239,172 @@ export class Bridge {
     this.options.log('INFO', 'Message accepted and queued');
     this.report();
     if (!this.workers.has(route)) void this.workRoute(route, this.generation);
+  }
+
+  private async openControl(route: string, message: IncomingMessage, kind: ControlMenu['kind']): Promise<void> {
+    const previous = this.controls.get(route);
+    if (previous) void this.closeControl(previous, '已被新指令替换');
+    if (kind === 'session' && this.workers.has(route)) {
+      await this.options.lark.sendText(message.chatId, '当前聊天还有执行或排队任务，请处理完后再新建会话。');
+      return;
+    }
+    const menu: ControlMenu = {
+      route, message, kind, models: [], model: this.settings.model, page: 0,
+      expiresAt: Date.now() + CONTROL_TIMEOUT_MS, executing: false, updates: Promise.resolve(),
+      snapshot: {
+        sessionId: message.messageId, ownerOpenId: message.senderOpenId, chatType: message.chatType,
+        prompt: message.text, status: 'control', version: 1,
+      },
+    };
+    this.controls.set(route, menu);
+    menu.timer = setTimeout(() => { void this.closeControl(menu, '菜单已过期，请重新发送指令'); }, CONTROL_TIMEOUT_MS);
+    menu.timer.unref?.();
+    this.options.log('INFO', `Feishu control opened (${kind}, message=${message.messageId})`);
+    try {
+      if (kind !== 'session') menu.models = await this.options.codex.listModels();
+      if (this.controls.get(route) !== menu) return;
+      menu.snapshot.control = this.controlOptions(menu);
+      menu.cardMessageId = await this.options.lark.sendCard(message.chatId, menu.snapshot);
+      if (this.controls.get(route) !== menu) {
+        await this.updateControl(menu, { status: 'stopped', summary: '操作已结束', control: undefined });
+        return;
+      }
+      this.controlCards.set(menu.cardMessageId, menu);
+    } catch (error) {
+      this.options.log('ERROR', `Feishu control failed to open (${kind}): ${(error as Error).message}`);
+      if (this.controls.get(route) !== menu) return;
+      await this.closeControl(menu, '操作未打开');
+      await this.options.lark.sendText(message.chatId, (error as Error).message === '此模型没有可选推理强度'
+        ? '当前模型没有可选推理强度。' : '操作打开失败，请查看运行日志后重试。');
+    }
+  }
+
+  private controlOptions(menu: ControlMenu): NonNullable<CardSnapshot['control']> {
+    if (menu.kind === 'session') return {
+      title: '新建当前会话？', detail: '只更换当前聊天中你的 Codex 会话，原会话保留。菜单 5 分钟后失效。',
+      options: [{ label: '确认新建', value: 'new_session' }],
+    };
+    if (menu.kind === 'effort') {
+      const model = menu.models.find((item) => item.id === menu.model);
+      if (!model) throw new Error('当前模型不在 Codex 模型列表中');
+      if (!model.reasoningEfforts.length) throw new Error('此模型没有可选推理强度');
+      return {
+        title: `推理强度 · ${model.displayName}`, detail: '修改工具全局设置；之后收到的消息生效，继续原会话。菜单 5 分钟后失效。',
+        options: model.reasoningEfforts.map((item) => ({
+          label: `${item.reasoningEffort}${item.reasoningEffort === this.settings.effort ? '（当前）' : ''}`,
+          value: item.reasoningEffort,
+        })),
+      };
+    }
+    if (!menu.models.length) throw new Error('Codex 模型列表为空');
+    return {
+      title: '切换模型', detail: '修改工具全局设置；换模型后，之后收到的消息新建会话。菜单 5 分钟后失效。',
+      page: menu.page, pages: Math.ceil(menu.models.length / MODEL_PAGE_SIZE),
+      options: menu.models.slice(menu.page * MODEL_PAGE_SIZE, (menu.page + 1) * MODEL_PAGE_SIZE).map((model) => ({
+        label: `${model.displayName}${model.id === this.settings.model ? '（当前）' : ''}`, value: model.id,
+      })),
+    };
+  }
+
+  private updateControl(menu: ControlMenu, patch: Partial<CardSnapshot>): Promise<void> {
+    menu.updates = menu.updates.then(async () => {
+      if (!menu.cardMessageId) return;
+      const next = { ...menu.snapshot, ...patch, version: menu.snapshot.version + 1 };
+      await this.options.lark.updateCard(menu.cardMessageId, next);
+      menu.snapshot = next;
+    }).catch(() => this.options.log('ERROR', 'Feishu control card update failed'));
+    return menu.updates;
+  }
+
+  private async closeControl(menu: ControlMenu, summary: string): Promise<void> {
+    if (this.controls.get(menu.route) === menu) this.controls.delete(menu.route);
+    if (menu.cardMessageId) this.controlCards.delete(menu.cardMessageId);
+    if (menu.timer) clearTimeout(menu.timer);
+    this.options.log('INFO', `Feishu control closed (${menu.kind}, message=${menu.message.messageId}, ${summary})`);
+    await this.updateControl(menu, { status: 'stopped', summary, control: undefined });
+  }
+
+  private async onControlAction(menu: ControlMenu, action: CardAction): Promise<void> {
+    const allowed = this.settings.allowedOpenIds.includes(action.actorOpenId)
+      && (menu.message.chatType !== 'group' || (this.settings.allowGroupMentions && this.settings.allowedChatIds.includes(menu.message.chatId)));
+    if (!allowed || menu.message.senderOpenId !== action.actorOpenId || menu.executing
+      || this.controls.get(menu.route) !== menu || menu.snapshot.version !== action.version) {
+      this.options.log('WARN', 'Feishu control action rejected: owner, permission or version mismatch');
+      return;
+    }
+    if (Date.now() >= menu.expiresAt) {
+      await this.closeControl(menu, '菜单已过期，请重新发送指令');
+      return;
+    }
+    if (action.action === 'cancel') {
+      await this.closeControl(menu, '已取消');
+      return;
+    }
+    if (action.action === 'page' && menu.kind === 'model') {
+      const page = Number(action.value);
+      if (!Number.isSafeInteger(page) || page < 0 || page >= Math.ceil(menu.models.length / MODEL_PAGE_SIZE)) return;
+      menu.page = page;
+      await this.updateControl(menu, { control: this.controlOptions(menu) });
+      return;
+    }
+    if (action.action !== 'select' || !menu.snapshot.control?.options.some((item) => item.value === action.value)) return;
+    if (menu.kind === 'effort' && menu.model !== this.settings.model) {
+      await this.closeControl(menu, '模型已变化，请重新发送推理强度指令');
+      return;
+    }
+    if (menu.kind === 'session' && this.workers.has(menu.route)) {
+      await this.closeControl(menu, '当前聊天还有任务，请处理完后重新发送指令');
+      return;
+    }
+    menu.executing = true;
+    const generation = this.generation;
+    if (menu.timer) clearTimeout(menu.timer);
+    if (menu.kind === 'session') this.workers.add(menu.route);
+    this.options.log('INFO', `Feishu control submitted (${menu.kind}, message=${menu.message.messageId})`);
+    await this.updateControl(menu, { control: { title: '正在处理…', detail: '操作已提交，完成后会通知。', options: [], busy: true } });
+    try {
+      if (this.controls.get(menu.route) !== menu) return;
+      let summary: string;
+      if (menu.kind === 'session') {
+        const settings = this.settings;
+        const sessionGeneration = this.store.getSessionGeneration();
+        const threadId = await this.options.codex.startThread(settings.workingDirectory, settings.model, settings.effort);
+        if (this.controls.get(menu.route) !== menu) return;
+        await this.store.setThread(menu.message.chatId, menu.message.senderOpenId, threadId, sessionGeneration);
+        summary = '已新建当前会话，下一条消息将进入新会话。';
+        this.options.log('INFO', `Feishu route switched to a new Codex thread (chat=${menu.message.chatId}, sender=${menu.message.senderOpenId})`);
+      } else {
+        if (!this.options.onSettingsChange) throw new Error('远程设置保存接口未连接');
+        const model = menu.models.find((item) => item.id === action.value);
+        let effort = action.value!;
+        if (menu.kind === 'model') {
+          const efforts = model!.reasoningEfforts.map((item) => item.reasoningEffort);
+          effort = efforts.includes(this.settings.effort) ? this.settings.effort
+            : efforts.includes(model!.defaultReasoningEffort) ? model!.defaultReasoningEffort : efforts[0] || '';
+        }
+        await this.options.onSettingsChange(menu.kind === 'model' ? { model: action.value, effort } : { effort },
+          menu.kind === 'effort' ? menu.model : undefined);
+        summary = menu.kind === 'model'
+          ? `模型已设为 ${model!.displayName}，推理强度 ${effort || '自动'}。换模型后，之后收到的消息新建会话。`
+          : `推理强度已设为 ${effort}，之后收到的消息生效，继续原会话。`;
+      }
+      if (this.controls.get(menu.route) !== menu) return;
+      await this.updateControl(menu, { status: 'completed', summary, control: undefined });
+      this.options.log('INFO', `Feishu control completed (${menu.kind}, message=${menu.message.messageId})`);
+    } catch (error) {
+      this.options.log('ERROR', `Feishu control failed (${menu.kind}): ${(error as Error).message}`);
+      if (this.controls.get(menu.route) !== menu) return;
+      const detail = (error as Error).message;
+      await this.updateControl(menu, { status: 'failed', summary: detail.startsWith('设置已保存') || detail.startsWith('模型已变化')
+        ? detail : '操作未完成，请查看运行日志后重试。', control: undefined });
+    } finally {
+      if (this.controls.get(menu.route) === menu) this.controls.delete(menu.route);
+      if (menu.cardMessageId) this.controlCards.delete(menu.cardMessageId);
+      if (menu.kind === 'session' && generation === this.generation) {
+        this.workers.delete(menu.route);
+        if (this.state === 'running' && this.queues.get(menu.route)?.length) void this.workRoute(menu.route, this.generation);
+      }
+    }
   }
 
   private async workRoute(route: string, generation: number): Promise<void> {
@@ -425,6 +653,11 @@ export class Bridge {
   }
 
   private async onAction(action: CardAction): Promise<void> {
+    const menu = this.controlCards.get(action.cardMessageId);
+    if (menu) {
+      await this.onControlAction(menu, action);
+      return;
+    }
     const active = this.cards.get(action.cardMessageId);
     const oldRunningStop = action.action === 'stop' && active?.snapshot.status === 'running'
       && typeof action.version === 'number' && action.version >= 1 && action.version <= active.snapshot.version;

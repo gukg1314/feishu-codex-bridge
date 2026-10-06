@@ -116,7 +116,14 @@ async function startBridge(): Promise<void> {
   const codex = new CodexClient({ binaryPath: binaryPath('codex'), version: app.getVersion(), log: recordLog });
   bridge = new Bridge({
     settings, lark, codex, storageDir: dataPath('state'), log: recordLog,
-    onStatus: (next) => { status = next; publish(); }
+    onStatus: (next) => { status = next; publish(); },
+    onSettingsChange: (patch, expectedModel) => serialize(async () => {
+      if (expectedModel !== undefined && expectedModel !== saved.settings.model) {
+        throw new Error('模型已变化，请重新发送推理强度指令');
+      }
+      await updateSettings({ ...saved.settings, ...patch, appSecret: '' });
+      recordLog('INFO', `飞书设置已同步：模型 ${saved.settings.model}，推理强度 ${saved.settings.effort || '默认'}`);
+    })
   });
   try {
     await bridge.start();
@@ -189,18 +196,23 @@ async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
     previous.allowGroupMentions !== next.allowGroupMentions ||
     JSON.stringify(previous.allowedOpenIds) !== JSON.stringify(next.allowedOpenIds) ||
     JSON.stringify(previous.allowedChatIds) !== JSON.stringify(next.allowedChatIds);
-  if (modelChanged && (!wasRunning || connectionChanged)) await requestNewSession('模型切换');
-  saved = { settings: next, credentialsConfigured: saved.credentialsConfigured || secretChanged };
-  await saveSettings(dataPath('settings.json'), saved);
-  applyLoginItem(next);
-  recordLog('INFO', '设置已更新 · 敏感字段已脱敏');
-
-  if (wasRunning && connectionChanged) {
-    await stopBridge();
-    await startBridge();
-  } else if (wasRunning) {
-    await bridge?.updateSettings(next);
+  const nextSaved = { settings: next, credentialsConfigured: saved.credentialsConfigured || secretChanged };
+  await saveSettings(dataPath('settings.json'), nextSaved);
+  saved = nextSaved;
+  try {
+    applyLoginItem(next);
+    if (modelChanged && (!wasRunning || connectionChanged)) await requestNewSession('模型切换');
+    if (wasRunning && connectionChanged) {
+      await stopBridge();
+      await startBridge();
+    } else if (wasRunning) {
+      await bridge?.updateSettings(next);
+    }
+  } catch (error) {
+    recordLog('ERROR', `设置已保存，但桥接应用失败：${error instanceof Error ? error.message : '未知错误'}`);
+    throw new Error('设置已保存，但桥接应用失败，请查看日志并重新启动桥接');
   }
+  recordLog('INFO', '设置已更新 · 敏感字段已脱敏');
   publish();
   return snapshot();
 }

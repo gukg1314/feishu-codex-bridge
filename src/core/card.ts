@@ -28,7 +28,8 @@ function markdown(content: string): CardElement {
 function button(
   snapshot: CardSnapshot,
   label: string,
-  action: "stop_session" | "question_answer" | "permission_allow" | "permission_deny",
+  action: "stop_session" | "question_answer" | "permission_allow" | "permission_deny"
+    | "command_select" | "command_cancel" | "command_page",
   answer?: string,
   type = "default",
 ): CardElement {
@@ -95,7 +96,24 @@ function progressHistory(steps: { title: string; detail?: string }[]): CardEleme
 export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
   const elements: CardElement[] = quotedPrompt(snapshot.prompt);
   const summary = snapshot.summary?.trim();
-  if (snapshot.status === "running") {
+  if (snapshot.status === "control" && snapshot.control) {
+    const { title, detail, options, page = 0, pages = 1, busy } = snapshot.control;
+    elements.push(markdown(`**${title}**${detail ? `\n${detail}` : ""}`));
+    if (!busy) {
+      for (let i = 0; i < options.length; i += 2) {
+        elements.push(row(options.slice(i, i + 2).map((option) =>
+          button(snapshot, option.label, "command_select", option.value))));
+      }
+      if (pages > 1) {
+        elements.push(markdown(`<font color='grey'>第 ${page + 1} / ${pages} 页</font>`));
+        const navigation: CardElement[] = [];
+        if (page > 0) navigation.push(button(snapshot, "上一页", "command_page", String(page - 1)));
+        if (page + 1 < pages) navigation.push(button(snapshot, "下一页", "command_page", String(page + 1)));
+        if (navigation.length) elements.push(row(navigation));
+      }
+      elements.push(row([button(snapshot, "取消", "command_cancel")]));
+    }
+  } else if (snapshot.status === "running") {
     elements.push(markdown(`<font color='blue'>${snapshot.currentStep ? `正在执行 · ${snapshot.currentStep}` : "正在执行…"}</font>`));
     if (summary && summary !== "正在执行…") elements.push(markdown(`<font color='grey'>${summary}</font>`));
     const steps: { title: string; detail?: string }[] = snapshot.steps
@@ -135,7 +153,7 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
       button(snapshot, "拒绝", "permission_deny", undefined, "danger"),
     ]));
   } else if (snapshot.status === "stopped") {
-    elements.push(markdown("<font color='grey'>已停止</font>"));
+    elements.push(markdown(`<font color='grey'>${summary || "已停止"}</font>`));
   } else if (snapshot.status === "failed") {
     if (summary) elements.push(markdown(summary));
     elements.push(markdown("<font color='red'>执行遇到问题</font>"));
@@ -149,7 +167,7 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
       update_multi: true,
       enable_forward: false,
       width_mode: "default",
-      summary: { content: `Codex · ${snapshot.status === "running" ? "正在执行" : snapshot.status === "completed" ? "已完成" : snapshot.status === "stopped" ? "已停止" : snapshot.status === "failed" ? "失败" : "等待回复"}` },
+      summary: { content: `Codex · ${snapshot.status === "running" ? "正在执行" : snapshot.status === "completed" ? "已完成" : snapshot.status === "stopped" ? "已停止" : snapshot.status === "failed" ? "失败" : snapshot.status === "control" ? snapshot.control?.busy ? "正在处理" : "设置选择" : "等待回复"}` },
     },
     body: {
       direction: "vertical",

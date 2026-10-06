@@ -41,7 +41,7 @@ export interface IncomingMessage {
 export interface CardAction {
   cardMessageId: string;
   actorOpenId: string;
-  action: 'stop' | 'answer' | 'approve' | 'deny';
+  action: 'stop' | 'answer' | 'approve' | 'deny' | 'select' | 'cancel' | 'page';
   value?: string;
   version?: number;
 }
@@ -51,7 +51,7 @@ export interface CardSnapshot {
   ownerOpenId: string;
   chatType?: 'p2p' | 'group';
   prompt: string;
-  status: 'running' | 'completed' | 'stopped' | 'failed' | 'question' | 'approval';
+  status: 'running' | 'completed' | 'stopped' | 'failed' | 'question' | 'approval' | 'control';
   summary?: string;
   currentStep?: string;
   steps?: { title: string; detail?: string }[];
@@ -59,6 +59,14 @@ export interface CardSnapshot {
   version: number;
   question?: { text: string; options?: string[] };
   approval?: { title: string; detail?: string };
+  control?: {
+    title: string;
+    detail?: string;
+    options: { label: string; value: string }[];
+    page?: number;
+    pages?: number;
+    busy?: boolean;
+  };
 }
 
 export interface LarkTransport {

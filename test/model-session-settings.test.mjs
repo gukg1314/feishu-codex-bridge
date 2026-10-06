@@ -174,3 +174,15 @@ test('全局新会话请求持久化，原路线和去重记录保留', async (t
   assert.equal(saved.routes[secondKey].threadId, 'second-thread');
   assert.deepEqual(saved.seen, ['om_seen']);
 });
+
+test('路线写盘失败保留旧线程和会话代次', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-route-failure-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const store = new RouteStore(directory);
+  await store.setThread('oc_first', 'ou_owner', 'old-thread');
+  store.save = async () => { throw new Error('写盘失败'); };
+  await assert.rejects(store.setThread('oc_first', 'ou_owner', 'new-thread'), /写盘失败/);
+  await assert.rejects(store.requestNewSession(), /写盘失败/);
+  assert.equal(store.getThread('oc_first', 'ou_owner').threadId, 'old-thread');
+  assert.equal(store.getSessionGeneration(), 0);
+});

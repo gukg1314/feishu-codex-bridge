@@ -24,8 +24,8 @@ function find<T extends Element>(selector: string): T {
 function formSignature(): string {
   const controls = find<HTMLElement>('[data-panel="settings"]')
     .querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select');
-  return JSON.stringify([...controls].map((control) => control instanceof HTMLInputElement && control.type === 'checkbox'
-    ? control.checked : control.value));
+  return JSON.stringify(Object.fromEntries([...controls].map((control) => [control.id,
+    control instanceof HTMLInputElement && control.type === 'checkbox' ? control.checked : control.value])));
 }
 
 function refreshSaveState(): void {
@@ -96,12 +96,12 @@ function renderModelSettings(modelId: string, effort: string): void {
 }
 
 async function loadModels(): Promise<void> {
-  const modelId = find<HTMLSelectElement>('#fc-model').value || snapshot?.settings.model || '';
-  const effort = find<HTMLSelectElement>('#fc-effort').value || snapshot?.settings.effort || '';
   const help = find<HTMLElement>('[data-model-help]');
   help.textContent = '正在读取 Codex 模型列表…';
   try {
     models = await desktop.listModels();
+    const modelId = find<HTMLSelectElement>('#fc-model').value || snapshot?.settings.model || '';
+    const effort = find<HTMLSelectElement>('#fc-effort').value || snapshot?.settings.effort || '';
     renderModelSettings(modelId, effort);
     help.textContent = `已读取 ${models.length} 个模型；推理强度随模型变化。`;
   } catch (error) {
@@ -111,6 +111,13 @@ async function loadModels(): Promise<void> {
 }
 
 function render(next: DesktopSnapshot): void {
+  if (snapshot && savedForm && (snapshot.settings.model !== next.settings.model || snapshot.settings.effort !== next.settings.effort)) {
+    renderModelSettings(next.settings.model, next.settings.effort);
+    const baseline = JSON.parse(savedForm) as Record<string, string | boolean>;
+    baseline['fc-model'] = next.settings.model;
+    baseline['fc-effort'] = next.settings.effort;
+    savedForm = JSON.stringify(baseline);
+  }
   snapshot = next;
   find<HTMLElement>('.fc-version').textContent = `v${next.version}`;
   const state = next.status.state;

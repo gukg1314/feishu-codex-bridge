@@ -94,11 +94,14 @@ export function normalizeLarkCardAction(value: unknown): {
     question_answer: "answer",
     permission_allow: "approve",
     permission_deny: "deny",
+    command_select: "select",
+    command_cancel: "cancel",
+    command_page: "page",
   };
   const action = actionMap[string(actionValue.action) ?? ""];
   if (!action) return null;
   const answer = string(actionValue.answer);
-  if (action === "answer" && !answer) return null;
+  if ((action === "answer" || action === "select" || action === "page") && !answer) return null;
   return {
     eventId,
     cardMessageId,
@@ -200,7 +203,7 @@ export class LarkCliTransport implements LarkTransport {
       sessionId: snapshot.sessionId,
       snapshot,
     });
-    this.log("info", "飞书运行卡片已发送");
+    this.log("info", `飞书${snapshot.status === "control" ? "控制" : "运行"}卡片已发送`);
     return messageId;
   }
 
@@ -217,7 +220,8 @@ export class LarkCliTransport implements LarkTransport {
       "--data", file, "--as", "bot", "--json",
     ]);
     this.cards.set(cardMessageId, { ...old, snapshot });
-    this.log("info", "飞书运行卡片已更新");
+    this.log("info", snapshot.status === "control" || old.snapshot.status === "control"
+      ? `飞书控制卡片已更新（${snapshot.status}）` : "飞书运行卡片已更新");
   }
 
   async sendText(chatId: string, value: string): Promise<void> {
@@ -356,12 +360,20 @@ export class LarkCliTransport implements LarkTransport {
       this.log("warn", "飞书卡片回调已拒绝：操作者、会话或版本不匹配");
       return;
     }
+    if (!this.settings.allowedOpenIds.includes(event.actorOpenId)
+      || (card.snapshot.chatType === "group"
+        && (!this.settings.allowGroupMentions || !this.settings.allowedChatIds.includes(event.chatId)))) {
+      this.log("warn", "飞书卡片回调已拒绝：当前成员或群聊权限不足");
+      return;
+    }
     const actionVersion = `${event.cardMessageId}:${event.version}`;
     if (this.usedCardVersions.has(actionVersion)) return;
     if ((event.action === "stop" && card.snapshot.status !== "running")
       || (event.action === "answer" && card.snapshot.status !== "question")
       || (event.action === "approve" && card.snapshot.status !== "approval")
-      || (event.action === "deny" && card.snapshot.status !== "approval" && card.snapshot.status !== "question")) return;
+      || (event.action === "deny" && card.snapshot.status !== "approval" && card.snapshot.status !== "question")
+      || ((event.action === "select" || event.action === "cancel" || event.action === "page")
+        && (card.snapshot.status !== "control" || card.snapshot.control?.busy))) return;
     this.remember(this.seenActionIds, event.eventId);
     this.remember(this.usedCardVersions, actionVersion);
     try {
