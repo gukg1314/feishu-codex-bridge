@@ -148,6 +148,7 @@ test('飞书指令：所有别名与群聊 @ 格式，普通文字不误判', ()
 
 test('飞书指令：模型分页、强度匹配，换模型新建而换强度复用会话', async (t) => {
   const { lark, codex, bridge } = await harness(t);
+  codex.models = Array.from({ length: 51 }, (_, index) => ({ ...codex.models[0], id: `model-${index}` }));
   await lark.emitMessage(message('om_before_control'));
   await waitFor(() => codex.turns.length === 1);
   codex.turns[0].complete({ status: 'completed', text: '完成' });
@@ -155,13 +156,13 @@ test('飞书指令：模型分页、强度匹配，换模型新建而换强度�
 
   await lark.emitMessage(message('om_switch_model', { text: '/切模型' }));
   const modelCard = lark.cards.at(-1);
-  assert.equal(modelCard.snapshot.control.options.length, 6);
+  assert.equal(modelCard.snapshot.control.options.length, 50);
   assert.equal(modelCard.snapshot.control.pages, 2);
   await lark.emitAction(controlAction(modelCard, 'page', '1'));
-  assert.deepEqual(modelCard.snapshot.control.options.map((item) => item.value), ['model-6']);
-  await lark.emitAction(controlAction(modelCard, 'select', 'model-6'));
-  await lark.emitAction(controlAction(modelCard, 'select', 'model-6'));
-  assert.deepEqual([bridge.settings.model, bridge.settings.effort], ['model-6', 'high']);
+  assert.deepEqual(modelCard.snapshot.control.options.map((item) => item.value), ['model-50']);
+  await lark.emitAction(controlAction(modelCard, 'select', 'model-50'));
+  await lark.emitAction(controlAction(modelCard, 'select', 'model-50'));
+  assert.deepEqual([bridge.settings.model, bridge.settings.effort], ['model-50', 'high']);
   assert.equal(bridge.store.getSessionGeneration(), 1);
   await lark.emitMessage(message('om_after_model'));
   await waitFor(() => codex.turns.length === 2);

@@ -20,11 +20,11 @@ const snapshot = {
   prompt: '/切换模型', status: 'control', version: 2,
   control: {
     title: '选择模型', detail: '当前模型：model-0', page: 1, pages: 3,
-    options: Array.from({ length: 7 }, (_, i) => ({ label: `模型 ${i}`, value: `model-${i}` })),
+    options: Array.from({ length: 7 }, (_, i) => ({ label: `GPT-6.1-Sol-${i}（当前模型完整名称）`, value: `model-${i}` })),
   },
 };
-const buttons = (card) => card.body.elements.filter((item) => item.tag === 'column_set')
-  .flatMap((item) => item.columns.flatMap((column) => column.elements));
+const buttons = (card) => card.body.elements.flatMap((item) => item.tag === 'button' ? [item]
+  : item.tag === 'column_set' ? item.columns.flatMap((column) => column.elements) : []);
 const callback = (eventId, action, answer, patch = {}) => ({
   type: 'card.action.trigger', action_tag: 'button', event_id: eventId,
   message_id: 'om_menu', chat_id: 'oc_allowed', operator_id: 'ou_owner', token: 'token-1',
@@ -35,11 +35,14 @@ const callback = (eventId, action, answer, patch = {}) => ({
   ...patch,
 });
 
-test('控制卡片完整展示两列选项、分页和取消，完成后去掉按钮', () => {
+test('控制卡片单列全宽展示完整名称，保留分页和取消', () => {
   const card = buildLarkCard(snapshot);
   assert.ok(card.body.elements.some((item) => item.content?.includes('选择模型')));
   assert.ok(card.body.elements.some((item) => item.content?.includes('当前模型：model-0')));
-  assert.ok(card.body.elements.filter((item) => item.tag === 'column_set').every((item) => item.columns.length <= 2));
+  const choices = card.body.elements.filter((item) => item.tag === 'button');
+  assert.equal(choices.length, snapshot.control.options.length);
+  assert.ok(choices.every((item) => item.width === 'fill'));
+  assert.deepEqual(choices.map((item) => item.text.content), snapshot.control.options.map((item) => item.label));
   const values = buttons(card).map((item) => item.behaviors[0].value);
   assert.deepEqual(values.filter((value) => value.action === 'command_select').map((value) => value.answer),
     snapshot.control.options.map((option) => option.value));

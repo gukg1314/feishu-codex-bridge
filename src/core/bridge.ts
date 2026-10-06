@@ -11,7 +11,7 @@ type QueuedMessage = { message: IncomingMessage; settings: BridgeSettings; sessi
 
 const PROGRESS_INTERVAL_MS = 2_500;
 const CONTROL_TIMEOUT_MS = 5 * 60_000;
-const MODEL_PAGE_SIZE = 6;
+const MODEL_PAGE_SIZE = 50;
 
 type Command = 'session' | 'model' | 'effort' | 'cancel';
 
@@ -264,6 +264,7 @@ export class Bridge {
       if (kind !== 'session') menu.models = await this.options.codex.listModels();
       if (this.controls.get(route) !== menu) return;
       menu.snapshot.control = this.controlOptions(menu);
+      if (kind === 'model') this.options.log('INFO', `Feishu model menu rendered (single-column, models=${menu.models.length}, pageSize=${MODEL_PAGE_SIZE})`);
       menu.cardMessageId = await this.options.lark.sendCard(message.chatId, menu.snapshot);
       if (this.controls.get(route) !== menu) {
         await this.updateControl(menu, { status: 'stopped', summary: '操作已结束', control: undefined });

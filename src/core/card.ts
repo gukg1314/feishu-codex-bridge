@@ -100,9 +100,8 @@ export function buildLarkCard(snapshot: CardSnapshot): LarkCard {
     const { title, detail, options, page = 0, pages = 1, busy } = snapshot.control;
     elements.push(markdown(`**${title}**${detail ? `\n${detail}` : ""}`));
     if (!busy) {
-      for (let i = 0; i < options.length; i += 2) {
-        elements.push(row(options.slice(i, i + 2).map((option) =>
-          button(snapshot, option.label, "command_select", option.value))));
+      for (const option of options) {
+        elements.push(button(snapshot, option.label, "command_select", option.value));
       }
       if (pages > 1) {
         elements.push(markdown(`<font color='grey'>第 ${page + 1} / ${pages} 页</font>`));
