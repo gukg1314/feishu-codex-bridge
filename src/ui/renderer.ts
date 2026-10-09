@@ -21,6 +21,8 @@ function find<T extends Element>(selector: string): T {
   return element;
 }
 
+find<HTMLElement>('[data-dock-setting]').hidden = !navigator.platform.startsWith('Mac');
+
 function formSignature(): string {
   const controls = find<HTMLElement>('[data-panel="settings"]')
     .querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input, textarea, select');
@@ -153,6 +155,7 @@ function populateSettings(next: DesktopSnapshot): void {
   find<HTMLInputElement>('#fc-group-mention').checked = next.settings.allowGroupMentions;
   find<HTMLInputElement>('#fc-login-start').checked = next.settings.launchAtLogin;
   find<HTMLInputElement>('#fc-auto-connect').checked = next.settings.autoConnect;
+  find<HTMLInputElement>('#fc-hide-dock').checked = next.settings.hideDockIcon;
   savedForm = formSignature();
   refreshSaveState();
 }
@@ -181,7 +184,8 @@ function readSettings(): SettingsInput {
     sessionTimeoutHours: Number(find<HTMLInputElement>('#fc-session-timeout').value),
     allowGroupMentions: find<HTMLInputElement>('#fc-group-mention').checked,
     launchAtLogin: find<HTMLInputElement>('#fc-login-start').checked,
-    autoConnect: find<HTMLInputElement>('#fc-auto-connect').checked
+    autoConnect: find<HTMLInputElement>('#fc-auto-connect').checked,
+    hideDockIcon: find<HTMLInputElement>('#fc-hide-dock').checked
   };
 }
 

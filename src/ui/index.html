@@ -197,6 +197,7 @@
     #fc-bridge-demo .fc-input::placeholder { color: var(--fc-muted); }
     #fc-bridge-demo .fc-help { color: var(--fc-muted); font-size: 12px; line-height: 1.5; }
     #fc-bridge-demo .fc-switch-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; }
+    #fc-bridge-demo .fc-switch-row[hidden] { display: none; }
     #fc-bridge-demo .fc-switch-row + .fc-switch-row { border-top: 1px solid var(--fc-border); }
     #fc-bridge-demo .fc-switch-text { display: grid; gap: 3px; }
     #fc-bridge-demo .fc-switch-title { font-size: 13px; font-weight: 500; }
@@ -334,6 +335,7 @@
               <h2 class="fc-group-head">启动方式</h2>
               <label class="fc-switch-row cursor-interaction" for="fc-login-start"><span class="fc-switch-text"><span class="fc-switch-title">登录电脑时启动应用</span><span class="fc-switch-desc">打开桌面客户端</span></span><input class="fc-switch" id="fc-login-start" type="checkbox" role="switch"></label>
               <label class="fc-switch-row cursor-interaction" for="fc-auto-connect"><span class="fc-switch-text"><span class="fc-switch-title">应用启动后自动连接</span><span class="fc-switch-desc">自动启动飞书与 Codex 桥接</span></span><input class="fc-switch" id="fc-auto-connect" type="checkbox" role="switch"></label>
+              <label class="fc-switch-row cursor-interaction" for="fc-hide-dock" data-dock-setting hidden><span class="fc-switch-text"><span class="fc-switch-title">隐藏程序坞图标</span><span class="fc-switch-desc" id="fc-hide-dock-help">保存后生效；通过右上角菜单栏图标显示窗口，关闭窗口后继续后台运行</span></span><input class="fc-switch" id="fc-hide-dock" type="checkbox" role="switch" aria-describedby="fc-hide-dock-help"></label>
             </div>
             <div class="fc-settings-footer"><button class="fc-button fc-primary cursor-interaction" type="button" data-action="save" disabled>保存设置</button><span class="fc-save-note" data-save-note aria-live="polite"></span></div>
           </div>

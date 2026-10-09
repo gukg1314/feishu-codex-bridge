@@ -8,31 +8,60 @@ import test from 'node:test';
 
 const require = createRequire(import.meta.url);
 
-async function desktopHarness(directory) {
+async function desktopHarness(directory, platform = process.platform) {
   const source = await readFile(resolve('src/desktop/main.ts'), 'utf8');
   const built = buildSync({
     stdin: {
-      contents: `${source.replace('bridge = new Bridge({', 'bridge = new FakeBridge({')}\n
+      contents: `${source.replace('bridge = new Bridge({', 'bridge = new FakeBridge({')
+        .replace('void app.whenReady().then(', 'const ready = app.whenReady().then(')}\n
+        const bridgeCalls = { starts: 0, stops: 0, updates: 0, newSessions: 0 };
         class FakeBridge {
           constructor(options) { this.options = options; }
-          async start() {}
+          async start() { bridgeCalls.starts++; }
+          async stop() { bridgeCalls.stops++; }
+          async requestNewSession() { bridgeCalls.newSessions++; }
           getStatus() { return { state: 'running', activeTurns: 0, queuedMessages: 0 }; }
-          async updateSettings() {}
+          async updateSettings() { bridgeCalls.updates++; }
         }
-        export const harness = { updateSettings, startBridge, seed(value) { saved = value; }, current() { return saved; },
+        export const harness = { ready, bridgeCalls, updateSettings, startBridge, seed(value) { saved = value; }, current() { return saved; },
           remote(...args) { return bridge.options.onSettingsChange(...args); } };`,
       resolveDir: resolve('src/desktop'), loader: 'ts',
     },
     bundle: true, platform: 'node', format: 'cjs', write: false, external: ['electron'],
   });
   const loaded = { exports: {} };
+  const policies = [];
+  let resolveReady;
+  let nativeWindow;
+  let menu;
+  const ready = new Promise((resolvePromise) => { resolveReady = resolvePromise; });
+  const image = { crop() { return this; }, resize() { return this; } };
   const electron = {
-    app: { on() {}, whenReady: () => new Promise(() => {}), getPath: () => directory, getVersion: () => 'test', isPackaged: false },
+    app: {
+      on() {}, whenReady: () => ready, getPath: () => directory, getVersion: () => 'test', isPackaged: false,
+      setName() {}, getLoginItemSettings: () => ({}), setActivationPolicy: (policy) => policies.push(policy),
+    },
+    ipcMain: { handle() {} },
+    BrowserWindow: class {
+      constructor() {
+        nativeWindow = this;
+        this.webContents = { send() {}, setWindowOpenHandler() {}, on() {} };
+      }
+      on() {} once() {} isDestroyed() { return false; } loadFile() { return Promise.resolve(); }
+      show() { this.visible = true; } focus() { this.focused = true; }
+    },
+    Tray: class { setToolTip() {} on() {} setContextMenu(value) { menu = value; } },
+    Menu: { buildFromTemplate: (value) => value },
+    nativeImage: { createFromPath: () => image },
   };
-  new Function('require', 'module', 'exports', '__dirname', built.outputFiles[0].text)(
+  new Function('require', 'module', 'exports', '__dirname', 'process', built.outputFiles[0].text)(
     (id) => id === 'electron' ? electron : require(id), loaded, loaded.exports, resolve('src/desktop'),
+    Object.create(process, { platform: { value: platform } }),
   );
-  return loaded.exports.harness;
+  return {
+    ...loaded.exports.harness, policies, menu: () => menu, nativeWindow: () => nativeWindow,
+    boot: async () => { resolveReady(); await loaded.exports.harness.ready; },
+  };
 }
 
 function savedSettings(directory) {
@@ -58,7 +87,7 @@ test('串行保存先切换模型后拒绝旧模型的强度选择', async (t) =
   const directory = await mkdtemp(join(tmpdir(), 'feishu-remote-model-race-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const harness = await desktopHarness(directory);
-  harness.seed({ settings: savedSettings(directory), credentialsConfigured: true });
+  harness.seed({ settings: { ...savedSettings(directory), hideDockIcon: true }, credentialsConfigured: true });
   await harness.startBridge();
   const modelChange = harness.remote({ model: 'new-model' });
   const staleEffort = assert.rejects(harness.remote({ effort: 'low' }, 'old-model'), /模型已变化/);
@@ -67,9 +96,45 @@ test('串行保存先切换模型后拒绝旧模型的强度选择', async (t) =
   assert.deepEqual([harness.current().settings.model, harness.current().settings.effort], ['new-model', 'high']);
   const persisted = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
   assert.equal(persisted.settings.effort, 'high');
+  assert.equal(persisted.settings.hideDockIcon, true);
+  assert.deepEqual(harness.policies, []);
 });
 
-async function rendererHarness(listModels = async () => []) {
+test('Mac 程序坞开关即时切换、重启恢复，菜单栏可显示窗口且不重连或新建会话', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-dock-settings-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const harness = await desktopHarness(directory, 'darwin');
+  harness.seed({ settings: savedSettings(directory), credentialsConfigured: true });
+  await harness.startBridge();
+  for (const hidden of [true, false, true]) {
+    await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: hidden });
+  }
+  await harness.remote({ effort: 'max' }, 'old-model');
+  assert.deepEqual(harness.policies, ['accessory', 'regular', 'accessory']);
+  assert.deepEqual(harness.bridgeCalls, { starts: 1, stops: 0, updates: 4, newSessions: 0 });
+  assert.equal(harness.current().settings.hideDockIcon, true);
+
+  const restarted = await desktopHarness(directory, 'darwin');
+  await restarted.boot();
+  assert.equal(restarted.current().settings.hideDockIcon, true);
+  assert.deepEqual(restarted.policies, ['accessory']);
+  restarted.menu().find((item) => item.label === '显示窗口').click();
+  assert.equal(restarted.nativeWindow().visible, true);
+  assert.equal(restarted.nativeWindow().focused, true);
+  assert.ok(JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).settings.hideDockIcon);
+});
+
+test('Windows 程序坞设置不调用 Mac 原生接口', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-dock-windows-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const harness = await desktopHarness(directory, 'win32');
+  harness.seed({ settings: savedSettings(directory), credentialsConfigured: true });
+  await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: true });
+  await harness.boot();
+  assert.deepEqual(harness.policies, []);
+});
+
+async function rendererHarness(listModels = async () => [], platform = 'test') {
   const source = await readFile(resolve('src/ui/renderer.ts'), 'utf8');
   const prefix = source.slice(0, source.indexOf("for (const button of root.querySelectorAll<HTMLButtonElement>('[data-page]'))"));
   const compiled = transformSync(`${prefix}\nfunction getHarness() { return { render, populateSettings, readSettings, loadModels }; }`, { loader: 'ts', target: 'es2022' }).code;
@@ -81,8 +146,8 @@ async function rendererHarness(listModels = async () => []) {
   }
   class Input extends Element {}
   const controls = ['app-id', 'app-secret', 'allowed-users', 'allowed-chats', 'session-timeout', 'model', 'effort',
-    'group-mention', 'login-start', 'auto-connect'].map((id) => new Input(`fc-${id}`));
-  for (const id of ['group-mention', 'login-start', 'auto-connect']) {
+    'group-mention', 'login-start', 'auto-connect', 'hide-dock'].map((id) => new Input(`fc-${id}`));
+  for (const id of ['group-mention', 'login-start', 'auto-connect', 'hide-dock']) {
     const control = controls.find((item) => item.id === `fc-${id}`);
     control.type = 'checkbox';
     control.checked = false;
@@ -98,9 +163,10 @@ async function rendererHarness(listModels = async () => []) {
   };
   const document = { getElementById: () => root, documentElement: { classList: { add() {} } }, createElement: () => new Element() };
   const api = new Function('document', 'navigator', 'window', 'HTMLInputElement', `${compiled}\nreturn getHarness();`)(
-    document, { platform: 'test' }, { bridgeDesktop: { listModels } }, Input,
+    document, { platform }, { bridgeDesktop: { listModels } }, Input,
   );
-  return { ...api, field: (id) => elements.get(`#fc-${id}`), saveButton: () => elements.get('[data-action="save"]') };
+  return { ...api, field: (id) => elements.get(`#fc-${id}`), saveButton: () => elements.get('[data-action="save"]'),
+    dockSetting: () => elements.get('[data-dock-setting]') };
 }
 
 function snapshot(model = 'old-model', effort = 'high') {
@@ -108,7 +174,7 @@ function snapshot(model = 'old-model', effort = 'high') {
     version: 'test', credentialsConfigured: true, logs: [], status: { state: 'running', activeTurns: 0, queuedMessages: 0 },
     settings: {
       appId: 'cli_test', allowedOpenIds: ['ou_owner'], allowedChatIds: [], model, effort,
-      sessionTimeoutHours: 24, allowGroupMentions: false, launchAtLogin: false, autoConnect: false,
+      sessionTimeoutHours: 24, allowGroupMentions: false, launchAtLogin: false, autoConnect: false, hideDockIcon: false,
     },
   };
 }
@@ -121,12 +187,34 @@ test('远程模型和强度快照同步不清除其他未保存表单内容', as
   assert.equal(ui.saveButton().disabled, true);
   ui.field('app-secret').value = 'unsaved-secret';
   ui.field('allowed-users').value = 'ou_owner\nou_added';
+  ui.field('hide-dock').checked = true;
   ui.render(snapshot('new-model', 'low'));
   const input = ui.readSettings();
   assert.deepEqual([input.model, input.effort], ['new-model', 'low']);
   assert.equal(input.appSecret, 'unsaved-secret');
   assert.deepEqual(input.allowedOpenIds, ['ou_owner', 'ou_added']);
+  assert.equal(input.hideDockIcon, true);
   assert.equal(ui.saveButton().disabled, false);
+});
+
+test('程序坞开关仅在 Mac 显示，加载和读取设置并参与保存状态', async () => {
+  for (const platform of ['MacIntel', 'Win32']) {
+    const ui = await rendererHarness(undefined, platform);
+    const initial = snapshot();
+    ui.populateSettings(initial);
+    ui.render(initial);
+    assert.equal(ui.dockSetting().hidden, platform !== 'MacIntel');
+    assert.equal(ui.readSettings().hideDockIcon, false);
+    ui.field('hide-dock').checked = true;
+    ui.render(initial);
+    assert.equal(ui.readSettings().hideDockIcon, true);
+    assert.equal(ui.saveButton().disabled, false);
+    const saved = { ...initial, settings: { ...initial.settings, hideDockIcon: true } };
+    ui.populateSettings(saved);
+    ui.render(saved);
+    assert.equal(ui.field('hide-dock').checked, true);
+    assert.equal(ui.saveButton().disabled, true);
+  }
 });
 
 test('模型列表加载期间收到远程设置，加载完成后保留新设置', async () => {

@@ -9,6 +9,7 @@ export interface BridgeSettings {
   allowGroupMentions: boolean;
   launchAtLogin: boolean;
   autoConnect: boolean;
+  hideDockIcon: boolean;
 }
 
 export interface BridgeStatus {

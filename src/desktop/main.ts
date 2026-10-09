@@ -181,6 +181,12 @@ function applyLoginItem(settings: BridgeSettings): void {
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
 }
 
+function applyDockVisibility(settings: BridgeSettings): void {
+  if (process.platform !== 'darwin') return;
+  app.setActivationPolicy(settings.hideDockIcon ? 'accessory' : 'regular');
+  recordLog('INFO', settings.hideDockIcon ? 'Mac 程序坞图标已隐藏，可从菜单栏显示窗口' : 'Mac 程序坞图标已显示');
+}
+
 async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
   const next = await validateSettings(input, saved.settings.workingDirectory);
   const secretChanged = input.appSecret.length > 0;
@@ -201,6 +207,7 @@ async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
   saved = nextSaved;
   try {
     applyLoginItem(next);
+    if (previous.hideDockIcon !== next.hideDockIcon) applyDockVisibility(next);
     if (modelChanged && (!wasRunning || connectionChanged)) await requestNewSession('模型切换');
     if (wasRunning && connectionChanged) {
       await stopBridge();
@@ -343,6 +350,7 @@ void app.whenReady().then(async () => {
 
   createWindow();
   createTray();
+  applyDockVisibility(saved.settings);
   recordLog('INFO', '桌面客户端已启动');
 
   if (saved.settings.autoConnect) {

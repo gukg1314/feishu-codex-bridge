@@ -17,7 +17,7 @@ function loadTypeScript(entry) {
 
 const { CodexClient } = loadTypeScript('src/core/codex.ts');
 const { RouteStore } = loadTypeScript('src/core/routes.ts');
-const { defaultSettings, loadSettings, validateSettings } = loadTypeScript('src/desktop/settings.ts');
+const { defaultSettings, loadSettings, saveSettings, validateSettings } = loadTypeScript('src/desktop/settings.ts');
 
 test('Codex 模型目录分页并解析显示名、默认强度和支持的强度', async () => {
   const requests = [];
@@ -100,6 +100,7 @@ test('旧设置补齐默认值，保存设置时沿用已有工作目录', async
   assert.equal(defaults.settings.model, 'gpt-6-sol');
   assert.equal(defaults.settings.effort, 'max');
   assert.equal(defaults.settings.sessionTimeoutHours, 24);
+  assert.equal(defaults.settings.hideDockIcon, false);
 
   const settingsFile = join(directory, 'settings.json');
   await writeFile(settingsFile, JSON.stringify({
@@ -110,6 +111,7 @@ test('旧设置补齐默认值，保存设置时沿用已有工作目录', async
     },
   }));
   const migrated = await loadSettings(settingsFile);
+  assert.equal(migrated.settings.hideDockIcon, false);
   assert.deepEqual(
     [migrated.settings.model, migrated.settings.effort, migrated.settings.sessionTimeoutHours],
     ['gpt-6-sol', 'max', 24],
@@ -118,11 +120,16 @@ test('旧设置补齐默认值，保存设置时沿用已有工作目录', async
   const validInput = {
     appId: ' cli_new ', appSecret: 'secret', allowedOpenIds: ['ou_owner'], allowedChatIds: ['oc_allowed'],
     model: ' gpt-6-astra ', effort: ' high ', sessionTimeoutHours: 12,
-    allowGroupMentions: false, launchAtLogin: false, autoConnect: false,
+    allowGroupMentions: false, launchAtLogin: false, autoConnect: false, hideDockIcon: false,
   };
   const validated = await validateSettings({ ...validInput, workingDirectory: tmpdir() }, ` ${directory}/. `);
   assert.equal(validated.workingDirectory, resolve(directory));
   assert.deepEqual([validated.model, validated.effort, validated.sessionTimeoutHours], ['gpt-6-astra', 'high', 12]);
+  assert.equal(validated.hideDockIcon, false);
+  const hidden = await validateSettings({ ...validInput, hideDockIcon: true }, directory);
+  await saveSettings(settingsFile, { settings: hidden, credentialsConfigured: true });
+  assert.equal((await loadSettings(settingsFile)).settings.hideDockIcon, true);
+  await assert.rejects(validateSettings({ ...validInput, hideDockIcon: 'true' }, directory), /开关设置格式/);
   await assert.rejects(validateSettings({ ...validInput, sessionTimeoutHours: 1.5 }, directory), /会话超时/);
 });
 

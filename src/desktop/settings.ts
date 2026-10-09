@@ -18,7 +18,8 @@ export function defaultSettings(): SavedSettings {
       sessionTimeoutHours: 24,
       allowGroupMentions: false,
       launchAtLogin: false,
-      autoConnect: false
+      autoConnect: false,
+      hideDockIcon: false
     },
     credentialsConfigured: false
   };
@@ -70,7 +71,7 @@ export async function validateSettings(input: SettingsInput, savedWorkingDirecto
     if (error instanceof Error && error.message === '工作目录不是文件夹') throw error;
     throw new Error('工作目录不存在或无法访问');
   }
-  for (const key of ['allowGroupMentions', 'launchAtLogin', 'autoConnect'] as const) {
+  for (const key of ['allowGroupMentions', 'launchAtLogin', 'autoConnect', 'hideDockIcon'] as const) {
     if (typeof input[key] !== 'boolean') throw new Error('开关设置格式无效');
   }
   return {
@@ -83,7 +84,8 @@ export async function validateSettings(input: SettingsInput, savedWorkingDirecto
     sessionTimeoutHours: input.sessionTimeoutHours,
     allowGroupMentions: input.allowGroupMentions,
     launchAtLogin: input.launchAtLogin,
-    autoConnect: input.autoConnect
+    autoConnect: input.autoConnect,
+    hideDockIcon: input.hideDockIcon
   };
 }
 
