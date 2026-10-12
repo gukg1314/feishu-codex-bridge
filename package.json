@@ -40,6 +40,7 @@
     "directories": { "output": "release" },
     "mac": {
       "category": "public.app-category.productivity",
+      "extendInfo": { "LSUIElement": true },
       "target": [{ "target": "dmg", "arch": ["arm64"] }],
       "artifactName": "飞书桥接Codex-${version}-mac-arm64.${ext}",
       "identity": "-",

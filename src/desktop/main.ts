@@ -21,7 +21,6 @@ let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 let closeDialogOpen = false;
-let dockRehideTimer: ReturnType<typeof setTimeout> | undefined;
 let logs: LogEntry[] = [];
 let operations: Promise<unknown> = Promise.resolve();
 
@@ -182,25 +181,15 @@ function applyLoginItem(settings: BridgeSettings): void {
   app.setLoginItemSettings({ openAtLogin: settings.launchAtLogin });
 }
 
-async function applyDockVisibility(settings: BridgeSettings): Promise<void> {
+function applyDockVisibility(settings: BridgeSettings): void {
   const dock = app.dock;
   if (process.platform !== 'darwin' || !dock) return;
-  if (dockRehideTimer) clearTimeout(dockRehideTimer);
-  dockRehideTimer = undefined;
-  if (settings.hideDockIcon) {
-    if (dock.isVisible()) dock.hide();
-    // macOS 启动激活可能覆盖首次隐藏；两秒后复核也避开 Dock 的一秒限制。
-    dockRehideTimer = setTimeout(() => {
-      dockRehideTimer = undefined;
-      if (quitting || !saved.settings.hideDockIcon) return;
-      if (dock.isVisible()) dock.hide();
-      const visible = dock.isVisible();
-      recordLog(visible ? 'WARN' : 'INFO', `Mac 程序坞隐藏已复核：图标${visible ? '仍可见' : '不可见'}`);
-    }, 2000);
-  } else if (!dock.isVisible()) {
-    await dock.show();
-  }
-  recordLog('INFO', `Mac 程序坞设置已应用：隐藏${settings.hideDockIcon ? '开启' : '关闭'}，图标${dock.isVisible() ? '可见' : '不可见'}`);
+  const policy = settings.hideDockIcon ? 'accessory' : 'regular';
+  app.setActivationPolicy(policy);
+  if (window && !window.isDestroyed() && window.isVisible()) showWindow();
+  const hidden = !dock.isVisible();
+  recordLog(hidden === settings.hideDockIcon ? 'INFO' : 'WARN',
+    `Mac 程序坞设置已应用：模式 ${policy}，隐藏${settings.hideDockIcon ? '开启' : '关闭'}，图标${hidden ? '不可见' : '可见'}`);
 }
 
 async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
@@ -223,7 +212,7 @@ async function updateSettings(input: SettingsInput): Promise<DesktopSnapshot> {
   saved = nextSaved;
   try {
     applyLoginItem(next);
-    if (previous.hideDockIcon !== next.hideDockIcon) await applyDockVisibility(next);
+    if (previous.hideDockIcon !== next.hideDockIcon) applyDockVisibility(next);
     if (modelChanged && (!wasRunning || connectionChanged)) await requestNewSession('模型切换');
     if (wasRunning && connectionChanged) {
       await stopBridge();
@@ -364,9 +353,9 @@ void app.whenReady().then(async () => {
     else if (action === 'maximize') window?.isMaximized() ? window.unmaximize() : window?.maximize();
   });
 
+  applyDockVisibility(saved.settings);
   createWindow();
   createTray();
-  await applyDockVisibility(saved.settings);
   recordLog('INFO', '桌面客户端已启动');
 
   if (saved.settings.autoConnect) {
