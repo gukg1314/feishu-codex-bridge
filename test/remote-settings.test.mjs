@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { EventEmitter } from 'node:events';
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -23,14 +24,18 @@ async function desktopHarness(directory, platform = process.platform) {
           getStatus() { return { state: 'running', activeTurns: 0, queuedMessages: 0 }; }
           async updateSettings() { bridgeCalls.updates++; }
         }
-        export const harness = { ready, bridgeCalls, updateSettings, startBridge, seed(value) { saved = value; }, current() { return saved; },
+        export const harness = { ready, bridgeCalls, snapshot, updateSettings, startBridge, seed(value) { saved = value; }, current() { return saved; },
           remote(...args) { return bridge.options.onSettingsChange(...args); } };`,
       resolveDir: resolve('src/desktop'), loader: 'ts',
     },
     bundle: true, platform: 'node', format: 'cjs', write: false, external: ['electron'],
   });
   const loaded = { exports: {} };
-  const policies = [];
+  const dockCalls = { hide: 0, show: 0, checks: 0 };
+  let dockVisible = true;
+  let skipNextHide = false;
+  const timers = new Map();
+  let nextTimerId = 0;
   let resolveReady;
   let nativeWindow;
   let menu;
@@ -39,27 +44,38 @@ async function desktopHarness(directory, platform = process.platform) {
   const electron = {
     app: {
       on() {}, whenReady: () => ready, getPath: () => directory, getVersion: () => 'test', isPackaged: false,
-      setName() {}, getLoginItemSettings: () => ({}), setActivationPolicy: (policy) => policies.push(policy),
+      setName() {}, getLoginItemSettings: () => ({}),
+      dock: {
+        isVisible() { dockCalls.checks++; return dockVisible; },
+        hide() { dockCalls.hide++; dockVisible = skipNextHide; skipNextHide = false; },
+        async show() { dockCalls.show++; dockVisible = true; },
+      },
     },
     ipcMain: { handle() {} },
-    BrowserWindow: class {
+    BrowserWindow: class extends EventEmitter {
       constructor() {
+        super();
         nativeWindow = this;
         this.webContents = { send() {}, setWindowOpenHandler() {}, on() {} };
       }
-      on() {} once() {} isDestroyed() { return false; } loadFile() { return Promise.resolve(); }
+      isDestroyed() { return false; } loadFile() { return Promise.resolve(); }
       show() { this.visible = true; } focus() { this.focused = true; }
     },
     Tray: class { setToolTip() {} on() {} setContextMenu(value) { menu = value; } },
     Menu: { buildFromTemplate: (value) => value },
     nativeImage: { createFromPath: () => image },
   };
-  new Function('require', 'module', 'exports', '__dirname', 'process', built.outputFiles[0].text)(
+  new Function('require', 'module', 'exports', '__dirname', 'process', 'setTimeout', 'clearTimeout', built.outputFiles[0].text)(
     (id) => id === 'electron' ? electron : require(id), loaded, loaded.exports, resolve('src/desktop'),
     Object.create(process, { platform: { value: platform } }),
+    (callback, delay) => { const id = ++nextTimerId; timers.set(id, { callback, delay }); return id; },
+    (id) => timers.delete(id),
   );
   return {
-    ...loaded.exports.harness, policies, menu: () => menu, nativeWindow: () => nativeWindow,
+    ...loaded.exports.harness, dockCalls, dockVisible: () => dockVisible, menu: () => menu, nativeWindow: () => nativeWindow,
+    skipNextDockHide: () => { skipNextHide = true; },
+    pendingDockChecks: () => [...timers.values()].map((item) => item.delay),
+    runDockCheck: () => { const pending = [...timers.values()]; timers.clear(); pending.forEach((item) => item.callback()); },
     boot: async () => { resolveReady(); await loaded.exports.harness.ready; },
   };
 }
@@ -97,7 +113,7 @@ test('串行保存先切换模型后拒绝旧模型的强度选择', async (t) =
   const persisted = JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8'));
   assert.equal(persisted.settings.effort, 'high');
   assert.equal(persisted.settings.hideDockIcon, true);
-  assert.deepEqual(harness.policies, []);
+  assert.deepEqual(harness.dockCalls, { hide: 0, show: 0, checks: 0 });
 });
 
 test('Mac 程序坞开关即时切换、重启恢复，菜单栏可显示窗口且不重连或新建会话', async (t) => {
@@ -110,18 +126,60 @@ test('Mac 程序坞开关即时切换、重启恢复，菜单栏可显示窗口�
     await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: hidden });
   }
   await harness.remote({ effort: 'max' }, 'old-model');
-  assert.deepEqual(harness.policies, ['accessory', 'regular', 'accessory']);
+  assert.equal(harness.dockCalls.hide, 2);
+  assert.equal(harness.dockCalls.show, 1);
+  assert.equal(harness.dockVisible(), false);
   assert.deepEqual(harness.bridgeCalls, { starts: 1, stops: 0, updates: 4, newSessions: 0 });
   assert.equal(harness.current().settings.hideDockIcon, true);
 
   const restarted = await desktopHarness(directory, 'darwin');
   await restarted.boot();
   assert.equal(restarted.current().settings.hideDockIcon, true);
-  assert.deepEqual(restarted.policies, ['accessory']);
+  assert.equal(restarted.dockVisible(), false);
+  assert.equal(restarted.dockCalls.hide, 1);
+  restarted.nativeWindow().emit('ready-to-show');
   restarted.menu().find((item) => item.label === '显示窗口').click();
   assert.equal(restarted.nativeWindow().visible, true);
   assert.equal(restarted.nativeWindow().focused, true);
+  restarted.runDockCheck();
+  assert.equal(restarted.dockCalls.hide, 1);
+  assert.equal(restarted.dockVisible(), false);
   assert.ok(JSON.parse(await readFile(join(directory, 'settings.json'), 'utf8')).settings.hideDockIcon);
+});
+
+test('Mac 启动首次隐藏失效时两秒后补偿，日志记录实际可见状态', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-dock-startup-race-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'settings.json'), JSON.stringify({
+    settings: { ...savedSettings(directory), hideDockIcon: true }, credentialsConfigured: true,
+  }));
+  const harness = await desktopHarness(directory, 'darwin');
+  harness.skipNextDockHide();
+  await harness.boot();
+  harness.nativeWindow().emit('ready-to-show');
+  assert.equal(harness.nativeWindow().visible, true);
+  assert.equal(harness.dockVisible(), true);
+  assert.deepEqual(harness.pendingDockChecks(), [2000]);
+  assert.ok(harness.snapshot().logs.some((entry) => entry.message.endsWith('隐藏开启，图标可见')));
+  harness.runDockCheck();
+  assert.equal(harness.dockVisible(), false);
+  assert.equal(harness.dockCalls.hide, 2);
+  assert.match(harness.snapshot().logs[0].message, /隐藏已复核：图标不可见/);
+});
+
+test('Mac 关闭隐藏开关取消延迟补偿，不无故显示已可见的 Dock', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'feishu-dock-cancel-check-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const harness = await desktopHarness(directory, 'darwin');
+  harness.seed({ settings: savedSettings(directory), credentialsConfigured: true });
+  harness.skipNextDockHide();
+  await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: true });
+  await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: false });
+  assert.deepEqual(harness.pendingDockChecks(), []);
+  harness.runDockCheck();
+  assert.equal(harness.dockVisible(), true);
+  assert.equal(harness.dockCalls.hide, 1);
+  assert.equal(harness.dockCalls.show, 0);
 });
 
 test('Windows 程序坞设置不调用 Mac 原生接口', async (t) => {
@@ -131,7 +189,7 @@ test('Windows 程序坞设置不调用 Mac 原生接口', async (t) => {
   harness.seed({ settings: savedSettings(directory), credentialsConfigured: true });
   await harness.updateSettings({ ...harness.current().settings, appSecret: '', hideDockIcon: true });
   await harness.boot();
-  assert.deepEqual(harness.policies, []);
+  assert.deepEqual(harness.dockCalls, { hide: 0, show: 0, checks: 0 });
 });
 
 async function rendererHarness(listModels = async () => [], platform = 'test') {
