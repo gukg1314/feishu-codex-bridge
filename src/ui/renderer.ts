@@ -11,9 +11,13 @@ if (navigator.platform.startsWith('Mac')) document.documentElement.classList.add
 if (navigator.platform.startsWith('Win')) document.documentElement.classList.add('fc-native-win');
 let snapshot: DesktopSnapshot | undefined;
 let busy = false;
+let busyAction = '';
+let modelsLoading = false;
+let logFilter = 'all';
 let models: CodexModel[] = [];
 let savedForm = '';
 let noteTimer: ReturnType<typeof setTimeout> | undefined;
+let lastShownError: string | undefined;
 
 function find<T extends Element>(selector: string): T {
   const element = root.querySelector<T>(selector);
@@ -31,10 +35,19 @@ function formSignature(): string {
 }
 
 function refreshSaveState(): void {
-  find<HTMLButtonElement>('[data-action="save"]').disabled = busy || !snapshot || formSignature() === savedForm;
+  const dirty = Boolean(snapshot && formSignature() !== savedForm);
+  find<HTMLButtonElement>('[data-action="save"]').disabled = busy || !snapshot || !dirty;
+  find<HTMLElement>('[data-dirty-note]').textContent = dirty ? '未保存' : '';
+}
+
+function refreshSettingsControls(): void {
+  find<HTMLElement>('#fc-group-fields').hidden = !find<HTMLInputElement>('#fc-group-mention').checked;
+  find<HTMLInputElement>('#fc-app-secret').required = Boolean(snapshot && (!snapshot.credentialsConfigured ||
+    find<HTMLInputElement>('#fc-app-id').value.trim() !== snapshot.settings.appId));
 }
 
 function showPage(page: string): void {
+  root.querySelectorAll<HTMLElement>(':popover-open').forEach((popover) => popover.hidePopover());
   root.querySelectorAll<HTMLButtonElement>('[data-page]').forEach((button) => {
     const active = button.dataset.page === page;
     button.dataset.active = String(active);
@@ -44,10 +57,21 @@ function showPage(page: string): void {
   root.querySelectorAll<HTMLElement>('[data-panel]').forEach((panel) => {
     panel.hidden = panel.dataset.panel !== page;
   });
+  find<HTMLElement>('.fc-main').scrollTop = 0;
+  const heading = find<HTMLElement>(`[data-panel="${page}"] h1`);
+  heading.setAttribute('tabindex', '-1');
+  heading.focus({ preventScroll: true });
 }
 
 function renderLogs(container: Element, entries: LogEntry[]): void {
   container.replaceChildren();
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'fc-empty';
+    empty.textContent = '暂无日志';
+    container.append(empty);
+    return;
+  }
   for (const log of entries) {
     const line = document.createElement('div');
     line.className = 'fc-log-line';
@@ -57,13 +81,20 @@ function renderLogs(container: Element, entries: LogEntry[]): void {
     const level = document.createElement('span');
     level.className = 'fc-log-level';
     level.dataset.level = log.level;
-    level.textContent = log.level;
+    level.textContent = { INFO: 'i', WARN: '!', ERROR: '×' }[log.level];
+    level.title = { INFO: '信息', WARN: '警告', ERROR: '错误' }[log.level];
+    level.setAttribute('role', 'img');
+    level.setAttribute('aria-label', level.title);
     const message = document.createElement('span');
     message.className = 'fc-log-message';
     message.textContent = log.message;
     line.append(time, level, message);
     container.append(line);
   }
+}
+
+function renderFullLogs(): void {
+  renderLogs(find('[data-full-logs]'), (snapshot?.logs ?? []).filter((entry) => logFilter === 'all' || entry.level === logFilter));
 }
 
 function option(value: string, label: string): HTMLOptionElement {
@@ -98,18 +129,29 @@ function renderModelSettings(modelId: string, effort: string): void {
 }
 
 async function loadModels(): Promise<void> {
+  if (modelsLoading) return;
+  modelsLoading = true;
   const help = find<HTMLElement>('[data-model-help]');
-  help.textContent = '正在读取 Codex 模型列表…';
+  const button = find<HTMLButtonElement>('[data-action="refresh-models"]');
+  button.disabled = true;
+  button.textContent = '读取中…';
+  help.textContent = '';
+  help.style.color = '';
   try {
     models = await desktop.listModels();
     const modelId = find<HTMLSelectElement>('#fc-model').value || snapshot?.settings.model || '';
     const effort = find<HTMLSelectElement>('#fc-effort').value || snapshot?.settings.effort || '';
     renderModelSettings(modelId, effort);
-    help.textContent = `已读取 ${models.length} 个模型；推理强度随模型变化。`;
+    if (snapshot) find<HTMLElement>('[data-current-model]').textContent = models.find((item) => item.id === snapshot?.settings.model)?.displayName || snapshot.settings.model;
   } catch (error) {
     help.textContent = error instanceof Error ? `模型读取失败：${error.message}` : '模型读取失败，请重试';
+    help.style.color = 'var(--fc-red)';
+  } finally {
+    modelsLoading = false;
+    button.disabled = false;
+    button.textContent = '刷新模型列表';
+    refreshSaveState();
   }
-  refreshSaveState();
 }
 
 function render(next: DesktopSnapshot): void {
@@ -124,30 +166,40 @@ function render(next: DesktopSnapshot): void {
   find<HTMLElement>('.fc-version').textContent = `v${next.version}`;
   const state = next.status.state;
   const running = state === 'running';
+  const ready = Boolean(next.settings.appId && next.credentialsConfigured && next.settings.allowedOpenIds.length);
   root.dataset.running = String(running);
+  root.dataset.state = state;
   find<HTMLElement>('[data-status-title]').textContent = {
-    running: '桥接运行中', starting: '桥接启动中', stopping: '桥接停止中',
-    stopped: '桥接已停止', error: '桥接发生错误'
-  }[state];
-  find<HTMLElement>('[data-status-pill]').textContent = {
     running: '运行中', starting: '启动中', stopping: '停止中',
-    stopped: '已停止', error: '错误'
+    stopped: ready ? '已停止' : '待配置', error: '发生错误'
   }[state];
-  find<HTMLElement>('[data-feishu-state]').textContent = running ? '已连接' : state === 'starting' ? '连接中' : '未连接';
-  find<HTMLElement>('[data-codex-state]').textContent = running ? '已就绪' : state === 'starting' ? '启动中' : '未启动';
-  find<HTMLButtonElement>('[data-action="start"]').disabled = busy || running || state === 'starting' || state === 'stopping';
+  find<HTMLElement>('[data-active-turns]').textContent = String(next.status.activeTurns);
+  find<HTMLElement>('[data-queued-messages]').textContent = String(next.status.queuedMessages);
+  find<HTMLElement>('[data-current-model]').textContent = models.find((item) => item.id === next.settings.model)?.displayName || next.settings.model;
+  find<HTMLElement>('[data-current-effort]').textContent = next.settings.effort || '自动';
+  find<HTMLButtonElement>('[data-action="setup"]').hidden = ready;
+  find<HTMLButtonElement>('[data-action="start"]').disabled = busy || !ready || running || state === 'starting' || state === 'stopping';
   find<HTMLButtonElement>('[data-action="stop"]').disabled = busy || state === 'stopped' || state === 'stopping' || state === 'error';
   find<HTMLButtonElement>('[data-action="new-session"]').disabled = busy || state === 'starting' || state === 'stopping';
+  for (const [name, idle, pending] of [
+    ['start', '启动桥接', '启动中…'], ['stop', '停止桥接', '停止中…'],
+    ['save', '保存设置', '保存中…'], ['new-session', '新建会话', '安排中…']
+  ]) find<HTMLButtonElement>(`[data-action="${name}"]`).textContent = busyAction === name ? pending : idle;
+  // 保存可能需要重连，暂时锁定输入，避免完成时覆盖等待期间的新编辑。
+  find<HTMLFieldSetElement>('[data-settings-fields]').disabled = busyAction === 'save';
   renderLogs(find('[data-recent-logs]'), next.logs.slice(0, 3));
-  renderLogs(find('[data-full-logs]'), next.logs);
+  renderFullLogs();
+  refreshSettingsControls();
   refreshSaveState();
+  if (next.status.lastError && next.status.lastError !== lastShownError) note(next.status.lastError, true);
+  lastShownError = next.status.lastError;
 }
 
 function populateSettings(next: DesktopSnapshot): void {
   find<HTMLInputElement>('#fc-app-id').value = next.settings.appId;
   find<HTMLInputElement>('#fc-app-secret').value = '';
   find<HTMLInputElement>('#fc-app-secret').placeholder = next.credentialsConfigured
-    ? '已保存 · 输入新密钥以替换' : '输入 App Secret';
+    ? '留空保留已保存的密钥' : '输入 App Secret';
   find<HTMLTextAreaElement>('#fc-allowed-users').value = next.settings.allowedOpenIds.join('\n');
   find<HTMLTextAreaElement>('#fc-allowed-chats').value = next.settings.allowedChatIds.join('\n');
   find<HTMLInputElement>('#fc-session-timeout').value = String(next.settings.sessionTimeoutHours);
@@ -192,22 +244,37 @@ function readSettings(): SettingsInput {
 function note(message: string, error = false): void {
   if (noteTimer) clearTimeout(noteTimer);
   const element = find<HTMLElement>('[data-save-note]');
-  element.textContent = message;
+  element.textContent = error ? '' : message;
   element.style.color = error ? 'var(--fc-red)' : 'var(--fc-green)';
+  find<HTMLElement>('[data-ui-notice]').hidden = !error || !message;
+  find<HTMLElement>('[data-ui-message]').textContent = error ? message : '';
   noteTimer = message && !error ? setTimeout(() => { element.textContent = ''; noteTimer = undefined; }, 2500) : undefined;
 }
 
-async function action(work: () => Promise<DesktopSnapshot>): Promise<void> {
+async function action(work: () => Promise<DesktopSnapshot>, name: string): Promise<void> {
   if (busy) return;
   busy = true;
+  busyAction = name;
+  note('');
   if (snapshot) render(snapshot);
   try {
     render(await work());
   } catch (error) {
     note(error instanceof Error ? error.message : '操作失败，请查看日志', true);
-    showPage('settings');
+    if (name === 'save') {
+      const message = error instanceof Error ? error.message : '';
+      const fields: [string, string][] = [['App Secret', 'app-secret'], ['App ID', 'app-id'], ['成员', 'allowed-users'],
+        ['群聊', 'allowed-chats'], ['推理强度', 'effort'], ['模型', 'model'], ['会话超时', 'session-timeout']];
+      const field = fields.find(([label]) => message.includes(label));
+      if (field) {
+        const control = find<HTMLInputElement>(`#fc-${field[1]}`);
+        control.setAttribute('aria-invalid', 'true');
+        queueMicrotask(() => control.focus());
+      }
+    }
   } finally {
     busy = false;
+    busyAction = '';
     if (snapshot) render(snapshot);
   }
 }
@@ -220,43 +287,68 @@ find<HTMLSelectElement>('#fc-model').addEventListener('change', () => {
   renderEfforts(model?.defaultReasoningEffort || model?.reasoningEfforts[0]?.reasoningEffort || '');
 });
 for (const event of ['input', 'change']) {
-  find<HTMLElement>('[data-panel="settings"]').addEventListener(event, () => {
+  find<HTMLElement>('[data-panel="settings"]').addEventListener(event, (change) => {
     note('');
+    if (change.target instanceof HTMLElement) change.target.removeAttribute('aria-invalid');
+    refreshSettingsControls();
     refreshSaveState();
   });
 }
 find<HTMLButtonElement>('[data-action="refresh-models"]').addEventListener('click', () => void loadModels());
-find<HTMLButtonElement>('[data-action="start"]').addEventListener('click', () => action(() => desktop.start()));
-find<HTMLButtonElement>('[data-action="stop"]').addEventListener('click', () => action(() => desktop.stop()));
+find<HTMLButtonElement>('[data-action="start"]').addEventListener('click', () => action(() => desktop.start(), 'start'));
+find<HTMLButtonElement>('[data-action="stop"]').addEventListener('click', () => action(() => desktop.stop(), 'stop'));
 find<HTMLButtonElement>('[data-action="new-session"]').addEventListener('click', () => {
   if (busy) return;
   void (async () => {
     busy = true;
+    busyAction = 'new-session';
+    note('');
     if (snapshot) render(snapshot);
     const feedback = find<HTMLElement>('[data-session-note]');
+    feedback.textContent = '';
     try {
       render(await desktop.newSession());
-      feedback.textContent = '已安排：每个聊天的下一条飞书指令将使用新会话。';
+      feedback.textContent = '已安排新会话，之后新收到的指令生效。';
       feedback.style.color = '';
     } catch (error) {
       feedback.textContent = error instanceof Error ? `新建会话失败：${error.message}` : '新建会话失败，请查看日志';
       feedback.style.color = 'var(--fc-red)';
     } finally {
       busy = false;
+      busyAction = '';
       if (snapshot) render(snapshot);
     }
   })();
 });
-find<HTMLButtonElement>('[data-action="save"]').addEventListener('click', () => action(async () => {
-  note('');
-  const result = await desktop.saveSettings(readSettings());
-  populateSettings(result);
-  note('设置已保存');
-  return result;
-}));
-for (const button of root.querySelectorAll<HTMLButtonElement>('[data-window-action]')) {
-  button.addEventListener('click', () => void desktop.windowAction(button.dataset.windowAction as 'close' | 'minimize' | 'maximize'));
+find<HTMLFormElement>('#fc-settings-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  void action(async () => {
+    const result = await desktop.saveSettings(readSettings());
+    populateSettings(result);
+    note('设置已保存');
+    return result;
+  }, 'save');
+});
+for (const button of root.querySelectorAll<HTMLButtonElement>('[data-action="view-logs"]')) {
+  button.addEventListener('click', () => showPage('logs'));
 }
+find<HTMLButtonElement>('[data-action="setup"]').addEventListener('click', () => showPage('settings'));
+find<HTMLButtonElement>('[data-action="dismiss-notice"]').addEventListener('click', () => note(''));
+for (const button of root.querySelectorAll<HTMLButtonElement>('[data-log-filter]')) {
+  button.addEventListener('click', () => {
+    logFilter = button.dataset.logFilter || 'all';
+    root.querySelectorAll<HTMLButtonElement>('[data-log-filter]').forEach((item) => item.setAttribute('aria-pressed', String(item === button)));
+    renderFullLogs();
+  });
+}
+document.addEventListener('keydown', (event) => {
+  if (!event.metaKey && !event.ctrlKey) return;
+  if (event.key === ',') { event.preventDefault(); showPage('settings'); }
+  if (event.key.toLowerCase() === 's' && !find<HTMLElement>('[data-panel="settings"]').hidden) {
+    event.preventDefault();
+    if (!find<HTMLButtonElement>('[data-action="save"]').disabled) find<HTMLFormElement>('#fc-settings-form').requestSubmit();
+  }
+});
 desktop.onSnapshot(render);
 void desktop.getSnapshot().then((initial) => {
   populateSettings(initial);

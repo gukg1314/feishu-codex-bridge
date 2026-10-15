@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Tray } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, Tray } from 'electron';
 import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { release } from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Bridge } from '../core/bridge';
@@ -21,6 +22,7 @@ let window: BrowserWindow | undefined;
 let tray: Tray | undefined;
 let quitting = false;
 let closeDialogOpen = false;
+let windowContentsReady = false;
 let logs: LogEntry[] = [];
 let operations: Promise<unknown> = Promise.resolve();
 
@@ -96,6 +98,15 @@ function serialize<T>(task: () => Promise<T>): Promise<T> {
   return result;
 }
 
+async function userOperation<T>(name: string, task: () => Promise<T>): Promise<T> {
+  try {
+    return await task();
+  } catch (error) {
+    recordLog('ERROR', `${name}失败：${error instanceof Error ? error.message : '未知错误'}`);
+    throw error;
+  }
+}
+
 function ensureReady(): void {
   if (!saved.settings.appId || !saved.credentialsConfigured) throw new Error('请先保存飞书 App ID 和 App Secret');
   if (!saved.settings.allowedOpenIds.length) throw new Error('请先填写允许使用的成员 open_id');
@@ -148,6 +159,24 @@ async function stopBridge(): Promise<void> {
   status = stopped;
   recordLog('INFO', '桥接已停止');
   publish();
+}
+
+async function requestStopBridge(): Promise<void> {
+  if (status.activeTurns > 0 || status.queuedMessages > 0) {
+    const options: Electron.MessageBoxOptions = {
+      type: 'question', title: '停止桥接', message: '将中断当前任务并清空排队消息。',
+      buttons: ['取消', '停止桥接'], defaultId: 0, cancelId: 0, noLink: true
+    };
+    recordLog('INFO', `停止桥接确认已显示：处理中 ${status.activeTurns}，排队 ${status.queuedMessages}`);
+    const result = window && !window.isDestroyed() && window.isVisible()
+      ? await dialog.showMessageBox(window, options)
+      : await dialog.showMessageBox(options);
+    if (result.response !== 1) {
+      recordLog('INFO', '已取消停止桥接');
+      return;
+    }
+  }
+  await stopBridge();
 }
 
 async function requestNewSession(reason: string): Promise<void> {
@@ -266,11 +295,39 @@ function updateTray(): void {
     { label: `桥接：${status.state === 'running' ? '运行中' : status.state === 'starting' ? '启动中' : '已停止'}`, enabled: false },
     { label: '显示窗口', click: showWindow },
     { type: 'separator' },
-    { label: '启动桥接', enabled: status.state === 'stopped' || status.state === 'error', click: () => { void serialize(startBridge).catch(() => {}); } },
-    { label: '停止桥接', enabled: status.state === 'running', click: () => { void serialize(stopBridge).catch(() => {}); } },
+    { label: '启动桥接', enabled: status.state === 'stopped' || status.state === 'error', click: () => { void serialize(() => userOperation('托盘启动桥接', startBridge)).catch(() => {}); } },
+    { label: '停止桥接', enabled: status.state === 'running', click: () => { void serialize(() => userOperation('托盘停止桥接', requestStopBridge)).catch(() => {}); } },
     { type: 'separator' },
     { label: '退出', click: () => app.quit() }
   ]));
+}
+
+function applyWindowMaterial(): void {
+  if (!window || window.isDestroyed() || !windowContentsReady) return;
+  const mac = process.platform === 'darwin';
+  // Mica 仅在 Windows 11 22H2 起稳定支持，旧系统保留浅色实底。
+  const windowsMica = process.platform === 'win32' && Number(release().split('.')[2]) >= 22621;
+  const reduced = nativeTheme.prefersReducedTransparency;
+  let material = !reduced && (mac || windowsMica);
+  try {
+    if (mac) window.setVibrancy(material ? 'under-window' : null);
+    if (windowsMica) window.setBackgroundMaterial(material ? 'mica' : 'none');
+    window.setBackgroundColor(material ? '#00000000' : '#f5f5fa');
+    recordLog('INFO', `窗口材质已应用：${material ? mac ? 'Mac 磨砂' : 'Windows Mica' : '浅色实底'}${reduced ? '（系统已减少透明度）' : ''}`);
+  } catch (error) {
+    material = false;
+    window.setBackgroundColor('#f5f5fa');
+    recordLog('WARN', `窗口材质已回退浅色：${error instanceof Error ? error.message : '未知错误'}`);
+  }
+  const platformClass = mac ? 'fc-native-mac' : process.platform === 'win32' ? 'fc-native-win' : 'fc-native-other';
+  void window.webContents.executeJavaScript(`(() => {
+    const root = document.documentElement;
+    root.classList.add('${platformClass}');
+    root.classList.toggle('fc-material', ${material});
+    return { revision: getComputedStyle(root).getPropertyValue('--fc-visual-revision').trim(), width: innerWidth, height: innerHeight };
+  })()`)
+    .then(({ revision, width, height }) => recordLog('INFO', `界面光影已同步：${revision}，内容区域 ${width}×${height}`))
+    .catch((error) => recordLog('WARN', `窗口材质样式同步失败：${error instanceof Error ? error.message : '未知错误'}`));
 }
 
 function createWindow(): void {
@@ -280,8 +337,9 @@ function createWindow(): void {
   const showImmediately = shouldShowOnStartup(process.platform, wasOpenedAtLogin);
   window = new BrowserWindow({
     width: 1080, height: 730, minWidth: 760, minHeight: 650,
-    frame: nativeMacTitleBar, titleBarStyle: nativeMacTitleBar ? 'hiddenInset' : undefined,
-    show: showImmediately, backgroundColor: '#ffffff',
+    frame: true, titleBarStyle: nativeMacTitleBar ? 'hiddenInset' : undefined,
+    visualEffectState: nativeMacTitleBar ? 'followWindow' : undefined,
+    show: showImmediately, backgroundColor: '#f5f5fa',
     icon: app.isPackaged
       ? path.join(process.resourcesPath, windowIcon)
       : path.resolve(__dirname, `../../icon/${windowIcon}`),
@@ -295,6 +353,7 @@ function createWindow(): void {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
+  window.webContents.on('dom-ready', () => { windowContentsReady = true; applyWindowMaterial(); });
   void window.loadFile(path.resolve(__dirname, '../ui/index.html')).catch(reportStartupFailure);
   window.once('ready-to-show', () => {
     if (!wasOpenedAtLogin) showWindow();
@@ -328,13 +387,14 @@ app.on('activate', showWindow);
 
 void app.whenReady().then(async () => {
   app.setName('飞书桥接Codex');
+  nativeTheme.themeSource = 'light';
   await mkdir(app.getPath('userData'), { recursive: true });
   saved = await loadSettings(dataPath('settings.json'));
   await restoreLogs();
   applyLoginItem(saved.settings);
 
   ipcMain.handle('bridge:get-snapshot', () => snapshot());
-  ipcMain.handle('bridge:list-models', async () => {
+  ipcMain.handle('bridge:list-models', () => userOperation('读取模型列表', async () => {
     const client = new CodexClient({ binaryPath: binaryPath('codex'), version: app.getVersion(), log: recordLog });
     await client.start();
     try {
@@ -342,19 +402,14 @@ void app.whenReady().then(async () => {
     } finally {
       await client.stop();
     }
-  });
-  ipcMain.handle('bridge:save-settings', (_event, input: SettingsInput) => serialize(() => updateSettings(input)));
-  ipcMain.handle('bridge:start', () => serialize(async () => { await startBridge(); return snapshot(); }));
-  ipcMain.handle('bridge:stop', () => serialize(async () => { await stopBridge(); return snapshot(); }));
-  ipcMain.handle('bridge:new-session', () => serialize(async () => { await requestNewSession('手动点击'); return snapshot(); }));
-  ipcMain.handle('bridge:window-action', (_event, action: string) => {
-    if (action === 'close') return requestWindowClose();
-    else if (action === 'minimize') window?.minimize();
-    else if (action === 'maximize') window?.isMaximized() ? window.unmaximize() : window?.maximize();
-  });
-
+  }));
+  ipcMain.handle('bridge:save-settings', (_event, input: SettingsInput) => serialize(() => userOperation('保存设置', () => updateSettings(input))));
+  ipcMain.handle('bridge:start', () => serialize(() => userOperation('启动桥接', async () => { await startBridge(); return snapshot(); })));
+  ipcMain.handle('bridge:stop', () => serialize(() => userOperation('停止桥接', async () => { await requestStopBridge(); return snapshot(); })));
+  ipcMain.handle('bridge:new-session', () => serialize(() => userOperation('新建会话', async () => { await requestNewSession('手动点击'); return snapshot(); })));
   applyDockVisibility(saved.settings);
   createWindow();
+  nativeTheme.on('updated', applyWindowMaterial);
   createTray();
   recordLog('INFO', '桌面客户端已启动');
 

@@ -1,5 +1,5 @@
 import { build } from 'esbuild';
-import { copyFile, mkdir } from 'node:fs/promises';
+import { copyFile, cp, mkdir } from 'node:fs/promises';
 
 await mkdir('dist/desktop', { recursive: true });
 await mkdir('dist/ui', { recursive: true });
@@ -33,5 +33,5 @@ await Promise.all([
     target: 'chrome130'
   }),
   copyFile('src/ui/index.html', 'dist/ui/index.html'),
-  copyFile('icon/main.png', 'dist/ui/main.png')
+  cp('src/ui/assets', 'dist/ui/assets', { recursive: true })
 ]);
